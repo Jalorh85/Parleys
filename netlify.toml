@@ -1,7 +1,7 @@
 # Netlify configuration for Parleys Full-Stack App
 
 [build]
-  command = "cd frontend && npm run build"
+  command = "cd frontend && npm install && npm run build"
   publish = "frontend/dist"
   functions = "backend/netlify/functions"
   [build.environment]
@@ -10,7 +10,7 @@
 # Redirigir llamadas de API al backend serverless function
 [[redirects]]
   from = "/api/*"
-  to = "/.netlify/functions/api/:splat"
+  to = "/.netlify/functions/api/api/:splat"
   status = 200
 
 # Redirigir el resto de las rutas a index.html (React SPA)
