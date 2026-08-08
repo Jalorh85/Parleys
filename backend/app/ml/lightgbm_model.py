@@ -5,10 +5,30 @@ from sklearn.pipeline import Pipeline
 from typing import Dict
 
 try:
-    from lightgbm import LGBMClassifier, LGBMRegressor
+    from lightgbm import LGBMClassifier as _LGBMClassifier, LGBMRegressor as _LGBMRegressor
+    HAS_REAL_LIGHTGBM = True
 except Exception:
-    from sklearn.ensemble import HistGradientBoostingClassifier as LGBMClassifier
-    from sklearn.ensemble import HistGradientBoostingRegressor as LGBMRegressor
+    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    HAS_REAL_LIGHTGBM = False
+
+    # Igual que con el fallback de XGBoost: HistGradientBoosting* no acepta
+    # n_estimators/subsample/colsample_bytree/verbose (nombres de LightGBM) —
+    # se traduce lo que aplica y se descarta el resto.
+    def _LGBMClassifier(n_estimators=150, max_depth=5, learning_rate=0.08, random_state=42, **_ignored):
+        return HistGradientBoostingClassifier(
+            max_iter=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            random_state=random_state,
+        )
+
+    def _LGBMRegressor(n_estimators=150, max_depth=5, learning_rate=0.08, random_state=42, **_ignored):
+        return HistGradientBoostingRegressor(
+            max_iter=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            random_state=random_state,
+        )
 
 class LightGBMSportsModel:
     def __init__(self, n_estimators: int = 150, max_depth: int = 5, learning_rate: float = 0.08):
@@ -18,7 +38,7 @@ class LightGBMSportsModel:
 
         self.classifier = Pipeline([
             ("scaler", StandardScaler()),
-            ("lgbm", LGBMClassifier(
+            ("lgbm", _LGBMClassifier(
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
                 learning_rate=self.learning_rate,
@@ -31,7 +51,7 @@ class LightGBMSportsModel:
 
         self.spread_regressor = Pipeline([
             ("scaler", StandardScaler()),
-            ("lgbm", LGBMRegressor(
+            ("lgbm", _LGBMRegressor(
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
                 learning_rate=self.learning_rate,
@@ -44,7 +64,7 @@ class LightGBMSportsModel:
 
         self.total_regressor = Pipeline([
             ("scaler", StandardScaler()),
-            ("lgbm", LGBMRegressor(
+            ("lgbm", _LGBMRegressor(
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
                 learning_rate=self.learning_rate,

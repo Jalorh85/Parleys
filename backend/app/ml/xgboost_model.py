@@ -5,10 +5,32 @@ from sklearn.pipeline import Pipeline
 from typing import Dict
 
 try:
-    from xgboost import XGBClassifier, XGBRegressor
+    from xgboost import XGBClassifier as _XGBClassifier, XGBRegressor as _XGBRegressor
+    HAS_REAL_XGBOOST = True
 except Exception:
-    from sklearn.ensemble import HistGradientBoostingClassifier as XGBClassifier
-    from sklearn.ensemble import HistGradientBoostingRegressor as XGBRegressor
+    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    HAS_REAL_XGBOOST = False
+
+    # HistGradientBoosting* no acepta n_estimators/subsample/colsample_bytree/
+    # eval_metric (los nombres de parámetro de XGBoost) — solo max_iter y
+    # similares. Este wrapper traduce lo que sí aplica y descarta el resto,
+    # para que el fallback no reviente con "unexpected keyword argument"
+    # cuando xgboost no está instalado.
+    def _XGBClassifier(n_estimators=150, max_depth=4, learning_rate=0.08, random_state=42, **_ignored):
+        return HistGradientBoostingClassifier(
+            max_iter=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            random_state=random_state,
+        )
+
+    def _XGBRegressor(n_estimators=150, max_depth=4, learning_rate=0.08, random_state=42, **_ignored):
+        return HistGradientBoostingRegressor(
+            max_iter=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            random_state=random_state,
+        )
 
 class XGBoostSportsModel:
     def __init__(self, n_estimators: int = 150, max_depth: int = 4, learning_rate: float = 0.08):
@@ -18,7 +40,7 @@ class XGBoostSportsModel:
 
         self.classifier = Pipeline([
             ("scaler", StandardScaler()),
-            ("xgb", XGBClassifier(
+            ("xgb", _XGBClassifier(
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
                 learning_rate=self.learning_rate,
@@ -31,7 +53,7 @@ class XGBoostSportsModel:
 
         self.spread_regressor = Pipeline([
             ("scaler", StandardScaler()),
-            ("xgb", XGBRegressor(
+            ("xgb", _XGBRegressor(
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
                 learning_rate=self.learning_rate,
@@ -43,7 +65,7 @@ class XGBoostSportsModel:
 
         self.total_regressor = Pipeline([
             ("scaler", StandardScaler()),
-            ("xgb", XGBRegressor(
+            ("xgb", _XGBRegressor(
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
                 learning_rate=self.learning_rate,

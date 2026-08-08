@@ -74,8 +74,23 @@ def get_historical_dataset(league: str, n_samples: int = 1000) -> pd.DataFrame:
 
 
 def get_team_profiles(league: str) -> Dict[str, Dict]:
-    """Perfiles de equipo: rápidos e instantáneos para la API (sin bloqueos de red)."""
-    return generate_team_profiles(league)
+    """Perfiles de equipo: reales de ESPN si hay datos; para KBO (que no está
+    en ESPN), reales de TheSportsDB; si no, sintéticos. Si la fuente real
+    solo cubre parte de los equipos, se completa con el perfil sintético
+    para que ningún equipo de LEAGUE_TEAMS quede sin perfil."""
+    profiles = generate_team_profiles_from_espn(league)
+    if not profiles and league == "KBO":
+        profiles = _get_real_kbo_profiles()
+
+    if not profiles:
+        return generate_team_profiles(league)
+
+    if len(profiles) < len(LEAGUE_TEAMS.get(league, [])):
+        merged = generate_team_profiles(league)
+        merged.update(profiles)
+        return merged
+
+    return profiles
 
 
 def get_or_load_model(league: str) -> MetaEnsembleSportsModel:
