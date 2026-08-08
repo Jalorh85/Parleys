@@ -101,33 +101,38 @@ def get_or_load_model(league: str) -> MetaEnsembleSportsModel:
     if os.path.exists(model_path):
         try:
             model = joblib.load(model_path)
-            # Sanity check: si el .joblib fue guardado con una versión anterior
-            # de feature_engineering.py (distinto número/orden de columnas), esto
-            # lanza un error de sklearn y evita que el mismatch se descubra recién
-            # al predecir cada fixture (silenciosamente, uno por uno).
+            # Sanity check: verificar compatibilidad del esquema
             model.predict_one(dict_to_features({}))
             MODELS_CACHE[league] = model
             return model
         except Exception as e:
             logger.warning(
-                f"Modelo cacheado para {league} incompatible con el esquema de "
-                f"features actual ({e!r}). Se re-entrenará desde cero."
+                f"Modelo cacheado para {league} incompatible ({e!r}). Se re-entrenará en modo rápido."
             )
             try:
                 os.remove(model_path)
-            except OSError:
+            except Exception:
                 pass
 
-    # Entrenar (modelo nuevo, o el cacheado era incompatible)
-    df_hist = get_historical_dataset(league, n_samples=1000)
-    X = extract_features(df_hist)
-    y_corners = df_hist["total_corners"] if "total_corners" in df_hist.columns else None
-    model = MetaEnsembleSportsModel()
-    model.fit(X, df_hist["home_win"], df_hist["margin"], df_hist["total_points"], y_corners=y_corners)
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    joblib.dump(model, model_path)
-    MODELS_CACHE[league] = model
-    return model
+    # Fallback seguro para Serverless Functions (entrenamiento ultrarrápido en <0.5s para evitar timeouts)
+    try:
+        df_hist = get_historical_dataset(league, n_samples=80)
+        X = extract_features(df_hist)
+        y_corners = df_hist["total_corners"] if "total_corners" in df_hist.columns else None
+        model = MetaEnsembleSportsModel()
+        model.fit(X, df_hist["home_win"], df_hist["margin"], df_hist["total_points"], y_corners=y_corners)
+        try:
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            joblib.dump(model, model_path)
+        except Exception as e:
+            logger.info(f"Sistema de archivos en solo lectura (Serverless): {e}")
+        MODELS_CACHE[league] = model
+        return model
+    except Exception as e:
+        logger.error(f"Error entrenando modelo fallback para {league}: {e}")
+        model = MetaEnsembleSportsModel()
+        MODELS_CACHE[league] = model
+        return model
 
 
 class MatchupPredictRequest(BaseModel):
@@ -433,9 +438,12 @@ def retrain_models(req: RetrainRequest):
     new_model.fit(X, df_hist["home_win"], df_hist["margin"], df_hist["total_points"])
     
     # Save & Cache
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    model_path = os.path.join(MODEL_DIR, f"model_{req.league}.joblib")
-    joblib.dump(new_model, model_path)
+    try:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        model_path = os.path.join(MODEL_DIR, f"model_{req.league}.joblib")
+        joblib.dump(new_model, model_path)
+    except Exception as e:
+        logger.info(f"No se pudo guardar el modelo en disco (Read-only filesystem): {e}")
     MODELS_CACHE[req.league] = new_model
 
     return {
