@@ -12,7 +12,7 @@
 ![Deploy](https://img.shields.io/badge/Deploy-Vercel%20%7C%20Netlify%20%7C%20Railway-00F2FE?style=for-the-badge)
 
 <p align="center">
-  <b>Plataforma Full-Stack de Machine Learning Meta-Ensemble para la predicción de eventos deportivos (NBA, MLB, WNBA, KBO) y optimización de apuestas combinadas (Parleys) con detección de valor +EV en tiempo real.</b>
+  <b>Plataforma Full-Stack de Machine Learning Meta-Ensemble para la predicción de eventos deportivos (Liga MX, Leagues Cup 2026, NBA, MLB, WNBA, KBO) y optimización de apuestas combinadas (Parleys) con detección de valor +EV en tiempo real.</b>
 </p>
 
 </div>
@@ -23,7 +23,7 @@
 
 - [🌟 Aspectos Destacados](#-aspectos-destacados)
 - [🤖 Arquitectura del Meta-Ensemble de IA](#-arquitectura-del-meta-ensemble-de-ia)
-- [⚽ Ligas y Datos Reales (ESPN API)](#-ligas-y-datos-reales-espn-api)
+- [⚽ Ligas Soportadas y Datos en Vivo (ESPN API & TheSportsDB API)](#-ligas-soportadas-y-datos-en-vivo-espn-api--thesportsdb-api)
 - [🛠️ Tecnologías Utilizadas](#️-tecnologías-utilizadas)
 - [📂 Estructura del Proyecto](#-estructura-del-proyecto)
 - [🚀 Instalación y Ejecución Local](#-instalación-y-ejecución-local)
@@ -35,9 +35,10 @@
 
 ## 🌟 Aspectos Destacados
 
-- 🧠 **Meta-Ensemble Ponderado:** Combina 5 modelos de IA avanzados para maximizar la precisión de predicción en probabilidad de victoria, hándicap y totales Over/Under.
+- 🧠 **Meta-Ensemble Ponderado:** Combina 5 modelos de IA avanzados para maximizar la precisión de predicción en probabilidad de victoria, hándicap, totales Over/Under y córners.
 - 📈 **Detección de Apuestas con Valor (+EV):** Algoritmo automatizado que calcula el *Expected Value* comparando probabilidades de IA contra las cuotas implícitas de las casas de apuestas.
-- 🏀 **Integración con ESPN API:** Descarga partidos en vivo, horarios UTC y logotipos oficiales de los equipos para NBA, MLB y WNBA.
+- 🌐 **Integración Dual (ESPN API + TheSportsDB API):** Descarga partidos en vivo, resultados históricos, horarios UTC y logotipos oficiales de los equipos para todas las ligas.
+- 🇲🇽 **Soporte Especializado para Fútbol (Liga MX y Leagues Cup 2026):** Incluye modelo dedicado de regresión para predicción de **Córners Totales** en partidos de fútbol.
 - 🧮 **Calculadora e Creador de Parleys:** Genera apuestas combinadas personalizadas calculando cuotas compuestas, rendimiento estimado y evaluación de riesgo.
 - 📊 **Backtester & Batalla de Modelos:** Módulo visual para comparar el rendimiento histórico de cada modelo individual (SVM vs Red Neuronal vs Random Forest vs XGBoost vs LightGBM).
 - 🎨 **Diseño Moderno & Glassmorphism:** Interfaz futurista optimizada en modo oscuro con respuestas dinámicas de estado e iconos interactivos.
@@ -50,7 +51,7 @@ El motor predictivo no depende de una sola métrica, sino de una arquitectura de
 
 ```mermaid
 graph TD
-    A[Datos del Partido + ESPN API] --> B[Feature Engineering Engine]
+    A[Datos del Partido + ESPN API & TheSportsDB] --> B[Feature Engineering Engine]
     B --> C[SVM Classifier & Regressor]
     B --> D[Multi-Layer Perceptron Neural Net]
     B --> E[Random Forest Ensemble]
@@ -63,7 +64,7 @@ graph TD
     F -->|Peso: 25%| H
     G -->|Peso: 25%| H
     
-    H --> I[Predicción Final: Ganador, Margin, Total]
+    H --> I[Predicción Final: Ganador, Margin, Total & Córners]
     H --> J[Detección de Valor +EV]
 ```
 
@@ -74,18 +75,22 @@ graph TD
 | **LightGBM** | Light Gradient Boosting Machine | Totales Over/Under | `25%` |
 | **Neural Network** | Multi-Layer Perceptron (MLP) | Probabilidad de victoria | `20%` |
 | **SVM** | Support Vector Machines (Kernel RBF) | Clasificación de límites rígidos | `15%` |
-| **Random Forest** | Bagging Ensemble Trees | Control de varianza y baseline | `15%` |
+| **Random Forest** | Bagging Ensemble Trees & Corners Regressor | Control de varianza y Córners | `15%` |
 
 ---
 
-## ⚽ Ligas y Datos Reales (ESPN API)
+## ⚽ Ligas Soportadas y Datos en Vivo (ESPN API & TheSportsDB API)
 
-El sistema descarga y procesa información en tiempo real para múltiples disciplinas:
+El sistema procesa información en tiempo real combinando las APIs de **ESPN** y **TheSportsDB**:
 
-- **🏀 NBA:** National Basketball Association (Partidos de temporada regular/playoffs).
-- **⚾ MLB:** Major League Baseball (30 equipos completos).
-- **⛹️‍♀️ WNBA:** Women's National Basketball Association (Incluyendo equipos de expansión 2026).
-- **⚾ KBO:** Korea Baseball Organization (Con motor simulado de respaldo).
+| Liga | Deporte | Cobertura / APIs | Targets Predichos |
+| :--- | :--- | :--- | :--- |
+| 🇲🇽 **Liga MX (`MX`)** | Fútbol | ESPN API + TheSportsDB | Ganador, Margen, Goles Totales, **Córners Totales** |
+| 🏆 **Leagues Cup 2026 (`LCUP`)** | Fútbol | ESPN API + TheSportsDB | Ganador, Margen, Goles Totales |
+| 🏀 **NBA (`NBA`)** | Baloncesto | ESPN API + TheSportsDB | Ganador, Hándicap/Spread, Puntos Totales |
+| ⚾ **MLB (`MLB`)** | Béisbol | ESPN API + TheSportsDB (30 Equipos) | Ganador, Runline, Carrera Totales, ERA Pitcher |
+| ⛹️‍♀️ **WNBA (`WNBA`)** | Baloncesto | ESPN API (Incluye expansión 2026) | Ganador, Hándicap/Spread, Puntos Totales |
+| ⚾ **KBO (`KBO`)** | Béisbol | TheSportsDB + Fallback Simulado | Ganador, Runline, Carrera Totales |
 
 ---
 
@@ -95,7 +100,7 @@ El sistema descarga y procesa información en tiempo real para múltiples discip
 - **FastAPI 0.111** — Framework web asíncrono de alto rendimiento.
 - **Scikit-Learn 1.5** — Preprocesamiento, escalado y modelos SVM / Random Forest / MLP.
 - **Pandas & NumPy** — Manipulación matricial y feature engineering de vectores deportivos.
-- **HTTPX** — Cliente HTTP asíncrono para consumo de la API de ESPN.
+- **HTTPX** — Cliente HTTP asíncrono para consumo de **ESPN API** y **TheSportsDB API**.
 - **Mangum** — Adaptador ASGI a AWS Lambda / Netlify Serverless Functions.
 - **Uvicorn** — Servidor ASGI ultrarrápido para entorno local.
 
@@ -128,7 +133,8 @@ parleys/
 │   └── 📂 app/
 │       ├── 📄 main.py             # Aplicación principal FastAPI & Endpoints
 │       └── 📂 ml/
-│           ├── 📄 sports_api.py   # Conector ESPN API + mapeo de logos
+│           ├── 📄 sports_api.py   # Conector ESPN API + TheSportsDB API + mapeo de logos
+│           ├── 📄 kbo_thesportsdb.py # Módulo especializado para datos TheSportsDB
 │           ├── 📄 ensemble_model.py # Meta-Ensemble ML (XGB, LGBM, SVM, NN, RF)
 │           ├── 📄 feature_engineering.py # Extracción de vectores de características
 │           ├── 📄 data_generator.py # Perfiles de equipos y fallback simulado
@@ -144,9 +150,9 @@ parleys/
         ├── 📄 App.jsx             # Contenedor principal y enrutado de pestañas
         ├── 📄 index.css           # Tokens de diseño, gradientes y animaciones
         ├── 📂 components/
-        │   ├── 📄 Header.jsx      # Selector de liga y navegación de pestañas
+        │   ├── 📄 Header.jsx      # Selector de liga (MX, LCUP, NBA, MLB, WNBA, KBO)
         │   ├── 📄 DailyFixtures.jsx # Tarjetas de partidos en vivo y cuotas +EV
-        │   ├── 📄 TeamIcon.jsx    # Renderizador inteligente de logos ESPN
+        │   ├── 📄 TeamIcon.jsx    # Renderizador inteligente de logos ESPN / TheSportsDB
         │   ├── 📄 MatchPredictor.jsx # Simulador de partidos 1v1 personalizado
         │   ├── 📄 ParlayBuilder.jsx # Creador y calculadora de apuestas combinadas
         │   ├── 📄 ModelComparison.jsx # Comparador de precisión entre modelos
@@ -162,8 +168,8 @@ parleys/
 
 ### 1. Clonar el repositorio
 ```bash
-git clone https://github.com/tu-usuario/parleys.git
-cd parleys
+git clone https://github.com/Jalorh85/Parleys.git
+cd Parleys
 ```
 
 ### 2. Iniciar Backend y Frontend automáticamente (Windows)
@@ -215,11 +221,11 @@ El proyecto está 100% preparado con archivos de configuración serverless indep
 
 | Método | Endpoint | Descripción |
 | :---: | :--- | :--- |
-| `GET` | `/api/leagues` | Obtiene la lista de ligas soportadas y sus metadatos |
-| `GET` | `/api/fixtures?league=NBA&date=YYYY-MM-DD` | Devuelve los partidos del día con predicciones del Meta-Ensemble |
+| `GET` | `/api/leagues` | Obtiene la lista de ligas soportadas (`MX`, `LCUP`, `NBA`, `MLB`, `WNBA`, `KBO`) |
+| `GET` | `/api/fixtures?league=MX&date=YYYY-MM-DD` | Devuelve los partidos del día con predicciones del Meta-Ensemble (incluye córners para Liga MX) |
 | `POST` | `/api/predict` | Realiza una predicción personalizada 1v1 entre dos equipos |
 | `GET` | `/api/backtest?league=MLB` | Ejecuta la simulación de rendimiento histórico (+EV ROI) |
-| `POST` | `/api/train?league=WNBA` | Re-entrena el Meta-Ensemble con datos actualizados |
+| `POST` | `/api/train?league=WNBA` | Re-entrena el Meta-Ensemble con datos actualizados de ESPN / TheSportsDB |
 
 ---
 
@@ -233,5 +239,5 @@ Desarrollado con pasión por los datos y el deporte:
 
 ---
 <div align="center">
-  <sub>Construido con ❤️ usando FastAPI, React 19 y Machine Learning.</sub>
+  <sub>Construido con ❤️ usando FastAPI, React 19, ESPN API, TheSportsDB API y Machine Learning.</sub>
 </div>
