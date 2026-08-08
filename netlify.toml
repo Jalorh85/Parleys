@@ -1,20 +1,25 @@
-# Netlify — Configuración de despliegue para el dashboard Parleys AI
+# Netlify configuration for Parleys Full-Stack App
 
 [build]
-  # Directorio donde está el frontend
   base = "frontend"
-  # Comando para construir la app
   command = "npm run build"
-  # Carpeta que Netlify publica
   publish = "dist"
+  functions = "../backend/netlify/functions"
+  [build.environment]
+    PYTHON_VERSION = "3.11"
 
-# Redirige todas las rutas al index.html (necesario para React SPA)
+# Redirigir llamadas de API al backend serverless function
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# Redirigir el resto de las rutas a index.html (React SPA)
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
 
-# Cabeceras de caché para los assets
 [[headers]]
   for = "/assets/*"
   [headers.values]
