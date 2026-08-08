@@ -1,0 +1,21 @@
+# Netlify — Configuración de despliegue para el dashboard Parleys AI
+
+[build]
+  # Directorio donde está el frontend
+  base = "frontend"
+  # Comando para construir la app
+  command = "npm run build"
+  # Carpeta que Netlify publica
+  publish = "dist"
+
+# Redirige todas las rutas al index.html (necesario para React SPA)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Cabeceras de caché para los assets
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

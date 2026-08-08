@@ -1,0 +1,9 @@
+import sys
+import os
+
+# Asegurar que el directorio raíz del backend esté en el sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.main import app
+
+# Vercel Serverless Function entry point
