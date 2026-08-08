@@ -1,10 +1,9 @@
 # Netlify configuration for Parleys Full-Stack App
 
 [build]
-  base = "frontend"
-  command = "npm run build"
-  publish = "dist"
-  functions = "../backend/netlify/functions"
+  command = "cd frontend && npm run build"
+  publish = "frontend/dist"
+  functions = "backend/netlify/functions"
   [build.environment]
     PYTHON_VERSION = "3.11"
 
