@@ -1,9 +1,14 @@
 import numpy as np
 import pandas as pd
-from xgboost import XGBClassifier, XGBRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from typing import Dict
+
+try:
+    from xgboost import XGBClassifier, XGBRegressor
+except Exception:
+    from sklearn.ensemble import HistGradientBoostingClassifier as XGBClassifier
+    from sklearn.ensemble import HistGradientBoostingRegressor as XGBRegressor
 
 class XGBoostSportsModel:
     def __init__(self, n_estimators: int = 150, max_depth: int = 4, learning_rate: float = 0.08):

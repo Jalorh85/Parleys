@@ -1,9 +1,14 @@
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMClassifier, LGBMRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from typing import Dict
+
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+except Exception:
+    from sklearn.ensemble import HistGradientBoostingClassifier as LGBMClassifier
+    from sklearn.ensemble import HistGradientBoostingRegressor as LGBMRegressor
 
 class LightGBMSportsModel:
     def __init__(self, n_estimators: int = 150, max_depth: int = 5, learning_rate: float = 0.08):
