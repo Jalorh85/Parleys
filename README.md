@@ -10,12 +10,23 @@
 ![Scikit-Learn](https://img.shields.io/badge/Scikit--Learn-1.5-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white)
 ![XGBoost](https://img.shields.io/badge/XGBoost-Ensemble-22C55E?style=for-the-badge)
 ![Deploy](https://img.shields.io/badge/Deploy-Vercel%20%7C%20Netlify%20%7C%20Railway-00F2FE?style=for-the-badge)
+[![Live Demo](https://img.shields.io/badge/DEMO_ONLINE-pronosticos--ia.netlify.app-00C7B7?style=for-the-badge&logo=netlify&logoColor=white)](https://pronosticos-ia.netlify.app/)
 
 <p align="center">
   <b>Plataforma Full-Stack de Machine Learning Meta-Ensemble para la predicción de eventos deportivos (Liga MX, Leagues Cup 2026, NBA, MLB, WNBA, KBO) y optimización de apuestas combinadas (Parleys) con detección de valor +EV en tiempo real.</b>
+  <br/><br/>
+  🚀 <b>Demostración en vivo disponible en:</b> <a href="https://pronosticos-ia.netlify.app/"><b>https://pronosticos-ia.netlify.app/</b></a>
 </p>
 
 </div>
+
+---
+
+## 🖥️ Demostración en Vivo & Vista Previa
+
+[![PARLEYS ALOR 2026 Preview](docs/preview.png)](https://pronosticos-ia.netlify.app/)
+
+> 🌐 **Accede a la aplicación en producción:** [https://pronosticos-ia.netlify.app/](https://pronosticos-ia.netlify.app/)
 
 ---
 
