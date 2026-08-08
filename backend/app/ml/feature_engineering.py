@@ -1,7 +1,11 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 from typing import Tuple, List, Dict
+
+try:
+    from sklearn.preprocessing import StandardScaler
+except Exception:
+    StandardScaler = None
 
 FEATURE_COLS = [
     "off_rating_diff",
@@ -35,8 +39,8 @@ def dict_to_features(d: Dict) -> pd.DataFrame:
         "away_rest": d.get("away_rest", 1),
         "home_form": d.get("home_form", 0.5),
         "away_form": d.get("away_form", 0.5),
-        "h_pitcher_era": d.get("h_pitcher_era", 0.0),
-        "a_pitcher_era": d.get("a_pitcher_era", 0.0),
+        "a_pitcher_era": d.get("a_pitcher_era", 3.95),
+        "h_pitcher_era": d.get("h_pitcher_era", 3.85),
         "pace": d.get("pace", 100.0)
     }
     df = pd.DataFrame([row])
