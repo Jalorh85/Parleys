@@ -1,7 +1,10 @@
 import numpy as np
 import pandas as pd
+import logging
 from datetime import date, timedelta
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # --- Clubes Liga MX (mismos 18 que ya usa la liga "MX") ---
 _MX_TEAMS = [
@@ -487,11 +490,20 @@ def _enrich_fixture_with_profiles(home_team: str, away_team: str, league: str,
     }
 
 
-def get_upcoming_fixtures(league: str, target_date: Optional[date] = None, count: int = 8) -> List[Dict]:
+def get_upcoming_fixtures(league: str, target_date: Optional[date] = None, count: int = 8,
+                           allow_simulated_fallback: bool = False) -> List[Dict]:
     """
     Obtiene los partidos para la fecha indicada.
-    1. Intenta ESPN para obtener partidos REALES.
-    2. Si no hay datos reales, genera partidos SIMULADOS como fallback.
+    1. Intenta ESPN (o TheSportsDB para KBO) para obtener partidos REALES.
+    2. Si no hay datos reales, por defecto devuelve lista VACÍA — el
+       frontend (DailyFixtures.jsx) muestra un mensaje de "sin partidos
+       reales para esta fecha" en vez de datos inventados. Antes acá se
+       caía a partidos 100% simulados, lo cual es engañoso: parecía que
+       había partidos programados cuando en realidad no los hay.
+
+    allow_simulated_fallback: True restaura el comportamiento anterior
+        (generar partidos simulados). Solo pensado para demos/pruebas
+        locales — no se usa por defecto desde /api/fixtures.
     target_date: fecha objetivo (default = mañana).
     """
     if target_date is None:
@@ -526,7 +538,14 @@ def get_upcoming_fixtures(league: str, target_date: Optional[date] = None, count
             ))
         return enriched
 
-    # --- Fallback: partidos simulados ---
+    if not allow_simulated_fallback:
+        logger.info(
+            f"Sin partidos reales para {league} el {date_str} — no se generan "
+            f"partidos simulados (allow_simulated_fallback=False), se devuelve lista vacía."
+        )
+        return []
+
+    # --- Fallback: partidos simulados (solo si se pide explícitamente) ---
     rng = np.random.default_rng(hash(f"{date_str}{league}") % (2**31))
     teams = LEAGUE_TEAMS.get(league, LEAGUE_TEAMS["MLB"])
     fixtures = []
@@ -552,6 +571,7 @@ def get_upcoming_fixtures(league: str, target_date: Optional[date] = None, count
         ))
 
     return fixtures
+
 
 
 # Alias para compatibilidad con código existente que llama a get_2026_upcoming_fixtures

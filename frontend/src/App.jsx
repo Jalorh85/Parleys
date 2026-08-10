@@ -35,8 +35,9 @@ export default function App() {
   const [leagues, setLeagues] = useState({});
   const [fixtures, setFixtures] = useState([]);
   const [loadingFixtures, setLoadingFixtures] = useState(false);
-  const [fixtureSource, setFixtureSource] = useState(null); // 'TheSportsDB' | 'Simulado'
+  const [fixtureSource, setFixtureSource] = useState(null); // 'ESPN' | 'TheSportsDB' | 'Simulado'
   const [fetchError, setFetchError] = useState(null); // mensaje de error al cargar
+  const [noDataMessage, setNoDataMessage] = useState(null); // mensaje de "sin partidos reales" del backend
 
   const [parlayLegs, setParlayLegs] = useState([]);
 
@@ -52,6 +53,7 @@ export default function App() {
     setLoadingFixtures(true);
     setFixtureSource(null);
     setFetchError(null);
+    setNoDataMessage(null);
     fetchFixtures(league, date)
       .then(data => {
         if (data.error) {
@@ -62,6 +64,10 @@ export default function App() {
         // Detectar si los datos son reales o simulados
         if (list.length > 0) {
           setFixtureSource(list[0].source || null);
+        } else {
+          // Backend ya no rellena con partidos simulados cuando no hay
+          // reales -- trae un mensaje explicando la ausencia (ver main.py).
+          setNoDataMessage(data.message || null);
         }
       })
       .catch(err => {
@@ -141,13 +147,13 @@ export default function App() {
               fontSize: '0.75rem',
               padding: '0.3rem 0.75rem',
               borderRadius: '20px',
-              background: fixtureSource === 'TheSportsDB'
+              background: fixtureSource !== 'Simulado'
                 ? 'rgba(0,242,254,0.12)' : 'rgba(255,180,0,0.12)',
-              color: fixtureSource === 'TheSportsDB' ? '#00f2fe' : '#f5a623',
-              border: `1px solid ${fixtureSource === 'TheSportsDB' ? 'rgba(0,242,254,0.35)' : 'rgba(245,166,35,0.3)'}`,
-              textShadow: fixtureSource === 'TheSportsDB' ? '0 0 12px rgba(0,242,254,0.5)' : 'none',
+              color: fixtureSource !== 'Simulado' ? '#00f2fe' : '#f5a623',
+              border: `1px solid ${fixtureSource !== 'Simulado' ? 'rgba(0,242,254,0.35)' : 'rgba(245,166,35,0.3)'}`,
+              textShadow: fixtureSource !== 'Simulado' ? '0 0 12px rgba(0,242,254,0.5)' : 'none',
             }}>
-              {fixtureSource === 'TheSportsDB' ? '🟢 Partidos Reales' : '🟡 Datos Simulados'}
+              {fixtureSource !== 'Simulado' ? `🟢 Partidos Reales (${fixtureSource})` : '🟡 Datos Simulados'}
             </span>
           )}
         </div>
@@ -161,6 +167,7 @@ export default function App() {
             error={fetchError}
             onRetry={() => loadLeagueFixtures()}
             selectedDate={selectedDate}
+            noDataMessage={noDataMessage}
           />
         )}
 

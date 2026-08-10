@@ -233,6 +233,23 @@ def get_fixtures(
             "error": str(e)
         }
 
+    # Sin partidos reales para esta fecha/liga -> ya no se rellena con
+    # partidos simulados (ver get_upcoming_fixtures). Se corta acá antes de
+    # cargar/entrenar el modelo (evita trabajo innecesario) y se devuelve un
+    # mensaje claro para que el frontend lo muestre en vez de una lista vacía muda.
+    if not raw_fixtures:
+        return {
+            "league": league,
+            "date": target_date.strftime("%Y-%m-%d"),
+            "count": 0,
+            "fixtures": [],
+            "message": (
+                f"No hay partidos reales para la fecha del "
+                f"{target_date.strftime('%d/%m/%Y')}. Revisa el calendario "
+                f"para consultar los partidos en otra fecha."
+            )
+        }
+
     try:
         model = get_or_load_model(league)
     except Exception as e:

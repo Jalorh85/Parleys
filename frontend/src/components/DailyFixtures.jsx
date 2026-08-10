@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldAlert, Zap, TrendingUp, WifiOff, RefreshCw } from 'lucide-react';
+import { ShieldAlert, Zap, TrendingUp, WifiOff, RefreshCw, CalendarX } from 'lucide-react';
 import TeamIcon from './TeamIcon';
 
 // Convierte home_win_prob a texto "%","—" si el modelo no vino en la respuesta
@@ -7,7 +7,7 @@ import TeamIcon from './TeamIcon';
 const modelPct = (model) =>
   model?.home_win_prob != null ? `${(model.home_win_prob * 100).toFixed(0)}%` : '—';
 
-export default function DailyFixtures({ fixtures, loading, error, selectedDate, onRetry }) {
+export default function DailyFixtures({ fixtures, loading, error, selectedDate, onRetry, noDataMessage }) {
   if (loading) {
     return (
       <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
@@ -32,9 +32,19 @@ export default function DailyFixtures({ fixtures, loading, error, selectedDate, 
   }
 
   if (!fixtures || fixtures.length === 0) {
+    // El backend ya no rellena con partidos simulados cuando no hay reales —
+    // manda `message` en la respuesta de /api/fixtures (ver main.py). Si el
+    // componente padre todavía no reenvía ese campo como `noDataMessage`,
+    // se arma acá un mensaje equivalente con la fecha seleccionada.
+    const fallbackMessage = `No hay partidos reales para la fecha del ${selectedDate || 'día de hoy'}. Revisa el calendario para consultar los partidos en otra fecha.`;
+
     return (
       <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
-        <p>No se encontraron partidos programados para esta liga.</p>
+        <CalendarX size={48} color="#f5a623" style={{ margin: '0 auto 1rem' }} />
+        <h3 style={{ marginBottom: '0.5rem' }}>Sin Partidos Reales Disponibles</h3>
+        <p style={{ color: 'var(--text-muted)', maxWidth: '440px', margin: '0 auto' }}>
+          {noDataMessage || fallbackMessage}
+        </p>
       </div>
     );
   }
