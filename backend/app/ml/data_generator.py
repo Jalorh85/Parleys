@@ -1,10 +1,35 @@
 import numpy as np
 import pandas as pd
 import logging
+import hashlib
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _stable_seed(s: str) -> int:
+    """
+    Semilla determinista a partir de un string, para reemplazar el hash()
+    built-in de Python en todo lo que siembra np.random en este archivo.
+
+    hash() de strings en Python está sujeto a PYTHONHASHSEED, que se
+    randomiza en cada arranque de proceso (por seguridad, desde Python
+    3.3) -- eso significa que el mismo string ("LCUP", "2026-08-15América
+    Guadalajara", etc.) produce un hash DISTINTO cada vez que se levanta
+    un proceso nuevo (cada deploy, y en serverless a veces cada cold
+    start). Como resultado, los perfiles sintéticos de equipos, el
+    dataset histórico sintético con el que se re-entrena el modelo, y
+    hasta el home_form/away_form/home_rest/away_rest de un fixture
+    puntual cambiaban de valor de un despliegue a otro aunque el partido,
+    la fecha y el input fueran exactamente los mismos -- eso es lo que
+    hacía que la predicción de un mismo partido "cambiara sola".
+
+    hashlib SÍ es determinista entre procesos (no depende de
+    PYTHONHASHSEED), así que el mismo string siempre da la misma semilla.
+    """
+    return int(hashlib.md5(s.encode("utf-8")).hexdigest(), 16)
+
 
 # --- Clubes Liga MX (mismos 18 que ya usa la liga "MX") ---
 _MX_TEAMS = [
@@ -265,7 +290,7 @@ def corners_edge_threshold(league: str) -> float:
 
 def generate_team_profiles(league: str) -> Dict[str, Dict]:
     teams = LEAGUE_TEAMS.get(league, LEAGUE_TEAMS["MLB"])
-    np.random.seed(42 + hash(league) % 100)
+    np.random.seed(42 + _stable_seed(league) % 100)
     profiles = {}
     for team in teams:
         off_rating = np.random.normal(100, 10)
@@ -291,7 +316,7 @@ def generate_historical_dataset(league: str, n_samples: int = 1200,
     Equipos ausentes en `profiles` completan con el perfil sintético, para que
     nunca falte un equipo de LEAGUE_TEAMS.
     """
-    np.random.seed(101 + hash(league) % 500)
+    np.random.seed(101 + _stable_seed(league) % 500)
     teams = LEAGUE_TEAMS.get(league, LEAGUE_TEAMS["MLB"])
     synthetic_profiles = generate_team_profiles(league)
     if profiles:
@@ -402,7 +427,7 @@ def _enrich_fixture_with_profiles(home_team: str, away_team: str, league: str,
     profiles = generate_team_profiles(league)
 
     # Semilla determinista por partido para que los valores sean reproducibles
-    seed = hash(f"{date_str}{home_team}{away_team}") % (2**31)
+    seed = _stable_seed(f"{date_str}{home_team}{away_team}") % (2**31)
     rng = np.random.default_rng(seed)
 
     h_prof = profiles.get(home_team, {"off_rating": 100, "def_rating": 100, "home_adv": 3.0, "pace": 100, "pitching_era": 3.85})
@@ -546,7 +571,7 @@ def get_upcoming_fixtures(league: str, target_date: Optional[date] = None, count
         return []
 
     # --- Fallback: partidos simulados (solo si se pide explícitamente) ---
-    rng = np.random.default_rng(hash(f"{date_str}{league}") % (2**31))
+    rng = np.random.default_rng(_stable_seed(f"{date_str}{league}") % (2**31))
     teams = LEAGUE_TEAMS.get(league, LEAGUE_TEAMS["MLB"])
     fixtures = []
     used_teams: set = set()
@@ -577,3 +602,59 @@ def get_upcoming_fixtures(league: str, target_date: Optional[date] = None, count
 # Alias para compatibilidad con código existente que llama a get_2026_upcoming_fixtures
 def get_2026_upcoming_fixtures(league: str, count: int = 8) -> List[Dict]:
     return get_upcoming_fixtures(league, count=count)
+
+
+# ---------------------------------------------------------------------
+# Mezcla suave entre datos reales (ESPN) y sintéticos
+# ---------------------------------------------------------------------
+# Antes, generate_historical_dataset_from_espn() exigía >=30 partidos reales
+# o devolvía un DataFrame vacío -> el llamador caía 100% al dataset
+# sintético. Eso producía un salto brusco de metodología de entrenamiento
+# apenas se cruzaba ese umbral (ej. Leagues Cup pasando de 29 a 30 partidos
+# jugados), lo que podía voltear la predicción de un mismo partido de un
+# deploy a otro sin que el partido en sí hubiera cambiado.
+#
+# blend_real_and_synthetic() reemplaza ese salto por una rampa continua:
+# con pocos partidos reales (<MIN_REAL_GAMES) se usa 100% sintético igual
+# que antes; con muchos (>=FULL_REAL_GAMES) se usa 100% real igual que
+# antes; en el rango intermedio se mezclan ambos con un peso que crece
+# proporcionalmente a la cantidad de partidos reales disponibles, así que
+# cada partido nuevo jugado mueve el modelo un poco, no todo de golpe.
+MIN_REAL_GAMES = 8      # por debajo de esto, el real es demasiado ruidoso -> 100% sintético
+FULL_REAL_GAMES = 30    # a partir de esto, el real ya es representativo -> 100% real
+
+
+def blend_real_and_synthetic(league: str, df_real: pd.DataFrame, n_samples: int = 1000,
+                              extra_profiles: Optional[Dict[str, Dict]] = None) -> pd.DataFrame:
+    n_real = len(df_real)
+
+    if n_real >= FULL_REAL_GAMES:
+        return df_real
+
+    if n_real < MIN_REAL_GAMES:
+        return generate_historical_dataset(league, n_samples=n_samples, profiles=extra_profiles)
+
+    weight_real = (n_real - MIN_REAL_GAMES) / (FULL_REAL_GAMES - MIN_REAL_GAMES)  # 0..1 continuo
+
+    synth = generate_historical_dataset(league, n_samples=n_samples, profiles=extra_profiles)
+
+    # Repetimos los partidos reales (con jitter leve en el ruido, ya
+    # implícito en total_points/margin reales) para que su peso relativo
+    # en el dataset combinado sea proporcional a weight_real, en vez de
+    # quedar diluidos 1-a-1 frente a cientos de filas sintéticas.
+    target_real_rows = max(n_real, int(round(weight_real * n_samples)))
+    repeats = max(1, -(-target_real_rows // n_real))  # ceil division
+    df_real_boosted = pd.concat([df_real] * repeats, ignore_index=True).iloc[:target_real_rows]
+
+    n_synth_keep = max(1, int(round((1.0 - weight_real) * n_samples)))
+    seed = _stable_seed(f"blend-{league}") % (2**31)
+    synth_sample = synth.sample(
+        n=min(n_synth_keep, len(synth)), random_state=seed, replace=n_synth_keep > len(synth)
+    )
+
+    blended = pd.concat([df_real_boosted, synth_sample], ignore_index=True)
+    logger.info(
+        f"{league}: dataset mezclado -> {n_real} partidos reales "
+        f"(peso {weight_real:.2f}) + {len(synth_sample)} filas sintéticas de relleno"
+    )
+    return blended.reset_index(drop=True)

@@ -1,13 +1,15 @@
 import os
+import json
 import logging
 import joblib
 import numpy as np
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
+from apscheduler.schedulers.background import BackgroundScheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("parleys_ai")
@@ -18,6 +20,7 @@ from app.ml.data_generator import (
     get_2026_upcoming_fixtures,
     get_upcoming_fixtures,
     generate_historical_dataset,
+    blend_real_and_synthetic,
 )
 from app.ml.feature_engineering import dict_to_features, extract_features
 from app.ml.ensemble_model import MetaEnsembleSportsModel
@@ -42,8 +45,86 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "data", "models")
+_scheduler = BackgroundScheduler(timezone="UTC")
+
+
+@app.on_event("startup")
+def _on_startup():
+    # Si el modelo de una liga no existe o está vencido (más viejo que
+    # RETRAIN_INTERVAL_HOURS), lo entrenamos una vez al arrancar. Si ya
+    # existe y está vigente (Volume persistente de Railway), NO se toca --
+    # así un deploy normal no le cambia la predicción a nadie.
+    for league in ALL_LEAGUES:
+        if _model_is_stale(league):
+            try:
+                _train_league_model(league, n_samples=1200)
+            except Exception as e:
+                logger.error(f"No se pudo entrenar {league} al arrancar: {e}")
+        else:
+            try:
+                get_or_load_model(league)
+            except Exception as e:
+                logger.error(f"No se pudo cargar el modelo persistido de {league}: {e}")
+
+    # Retrain recurrente, desacoplado de deploys y de tráfico.
+    _scheduler.add_job(
+        retrain_all_leagues_job,
+        "interval",
+        hours=RETRAIN_INTERVAL_HOURS,
+        id="retrain_all_leagues",
+        replace_existing=True,
+        next_run_time=None,  # el próximo ciclo natural; el de arranque ya se hizo arriba
+    )
+    _scheduler.start()
+    logger.info(f"Scheduler de retrain iniciado (cada {RETRAIN_INTERVAL_HOURS}h).")
+
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    _scheduler.shutdown(wait=False)
+
+# En Railway, MODEL_DIR debe apuntar al mount path de un Volume persistente
+# (ej. "/data/models"), configurado por variable de entorno. Si no está
+# seteada, cae al directorio local del contenedor (se pierde en cada
+# deploy — solo pensado para desarrollo local).
+MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(os.path.dirname(__file__), "data", "models"))
 MODELS_CACHE: Dict[str, MetaEnsembleSportsModel] = {}
+
+# Cada cuántas horas se considera "vigente" un modelo ya entrenado antes de
+# que el job programado (ver retrain_all_leagues_job) lo vuelva a entrenar.
+# Con datos reales de ESPN una vez al día alcanza sobrado — los partidos de
+# una liga no cambian de resultado más de una vez por jornada.
+RETRAIN_INTERVAL_HOURS = float(os.environ.get("RETRAIN_INTERVAL_HOURS", "24"))
+ALL_LEAGUES = ["LCUP", "MLB", "WNBA", "KBO", "MX", "NFL"]
+
+
+def _meta_path(league: str) -> str:
+    return os.path.join(MODEL_DIR, f"model_{league}.meta.json")
+
+
+def _read_meta(league: str) -> Optional[Dict]:
+    path = _meta_path(league)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _write_meta(league: str, n_real_games: int, source: str) -> None:
+    try:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        with open(_meta_path(league), "w") as f:
+            json.dump({
+                "league": league,
+                "trained_at": datetime.now(timezone.utc).isoformat(),
+                "n_real_games": n_real_games,
+                "data_source": source,
+            }, f)
+    except Exception as e:
+        logger.info(f"No se pudo escribir metadata de {league}: {e}")
 
 
 def _get_real_kbo_profiles() -> Dict[str, Dict]:
@@ -60,17 +141,28 @@ def _get_real_kbo_profiles() -> Dict[str, Dict]:
 
 def get_historical_dataset(league: str, n_samples: int = 1000) -> pd.DataFrame:
     """
-    Punto único de acceso al dataset histórico: intenta ESPN real primero.
-    KBO no está en ESPN, así que en su lugar usa perfiles reales de
-    TheSportsDB (standings) para sesgar el dataset sintético con datos
-    reales de fuerza de equipo. Si nada de eso está disponible, cae al
-    generador 100% sintético.
+    Punto único de acceso al dataset histórico. Combina datos reales de ESPN
+    (últimos resultados, forma reciente, localía) con datos sintéticos de
+    relleno mediante una rampa continua (blend_real_and_synthetic) en vez de
+    un salto todo-o-nada al cruzar cierta cantidad de partidos reales. KBO no
+    está en ESPN, así que en su lugar usa perfiles reales de TheSportsDB
+    (standings) para sesgar el dataset sintético con datos reales de fuerza
+    de equipo.
     """
-    df_hist = generate_historical_dataset_from_espn(league)
-    if df_hist.empty:
-        kbo_profiles = _get_real_kbo_profiles() if league == "KBO" else None
-        df_hist = generate_historical_dataset(league, n_samples=n_samples, profiles=kbo_profiles)
+    df_real = generate_historical_dataset_from_espn(league)
+    kbo_profiles = _get_real_kbo_profiles() if league == "KBO" else None
+    df_hist = blend_real_and_synthetic(league, df_real, n_samples=n_samples, extra_profiles=kbo_profiles)
     return df_hist
+
+
+def get_historical_dataset_with_meta(league: str, n_samples: int = 1000):
+    """Igual que get_historical_dataset(), pero además devuelve cuántos
+    partidos reales de ESPN se usaron -- solo lo necesita el job de
+    retrain programado, para dejarlo registrado en el .meta.json."""
+    df_real = generate_historical_dataset_from_espn(league)
+    kbo_profiles = _get_real_kbo_profiles() if league == "KBO" else None
+    df_hist = blend_real_and_synthetic(league, df_real, n_samples=n_samples, extra_profiles=kbo_profiles)
+    return df_hist, len(df_real)
 
 
 def get_team_profiles(league: str) -> Dict[str, Dict]:
@@ -94,6 +186,14 @@ def get_team_profiles(league: str) -> Dict[str, Dict]:
 
 
 def get_or_load_model(league: str) -> MetaEnsembleSportsModel:
+    """
+    IMPORTANTE: esta función solo CARGA modelos, no los reentrena en el
+    camino de una request (salvo la primera vez que Railway arranca con un
+    Volume vacío, ej. la primerísima vez que se despliega el proyecto).
+    El reentrenamiento normal ocurre en un job programado en background
+    (ver retrain_all_leagues_job), desacoplado de deploys y de requests, así
+    que una predicción no cambia solo porque hiciste `git push`.
+    """
     if league in MODELS_CACHE:
         return MODELS_CACHE[league]
 
@@ -107,32 +207,78 @@ def get_or_load_model(league: str) -> MetaEnsembleSportsModel:
             return model
         except Exception as e:
             logger.warning(
-                f"Modelo cacheado para {league} incompatible ({e!r}). Se re-entrenará en modo rápido."
+                f"Modelo cacheado para {league} incompatible ({e!r}). Se re-entrenará."
             )
             try:
                 os.remove(model_path)
             except Exception:
                 pass
 
-    # Fallback seguro para Serverless Functions (entrenamiento ultrarrápido en <0.5s para evitar timeouts)
+    # Solo llegamos acá si el Volume está vacío (primer arranque del
+    # proyecto en Railway) o el modelo guardado estaba corrupto. Entrenamos
+    # una vez, ya con datos reales+sintéticos mezclados (no la versión
+    # "ultrarrápida" de 80 muestras de antes), y lo persistimos para que la
+    # próxima request y el próximo deploy lo reutilicen sin reentrenar.
     try:
-        df_hist = get_historical_dataset(league, n_samples=80)
-        X = extract_features(df_hist)
-        y_corners = df_hist["total_corners"] if "total_corners" in df_hist.columns else None
-        model = MetaEnsembleSportsModel()
-        model.fit(X, df_hist["home_win"], df_hist["margin"], df_hist["total_points"], y_corners=y_corners)
-        try:
-            os.makedirs(MODEL_DIR, exist_ok=True)
-            joblib.dump(model, model_path)
-        except Exception as e:
-            logger.info(f"Sistema de archivos en solo lectura (Serverless): {e}")
-        MODELS_CACHE[league] = model
+        model = _train_league_model(league, n_samples=1200)
         return model
     except Exception as e:
         logger.error(f"Error entrenando modelo fallback para {league}: {e}")
         model = MetaEnsembleSportsModel()
         MODELS_CACHE[league] = model
         return model
+
+
+def _train_league_model(league: str, n_samples: int = 1200) -> MetaEnsembleSportsModel:
+    """Entrena, persiste (joblib + metadata) y cachea en memoria el modelo
+    de una liga. Usa siempre la mezcla real+sintética (últimos resultados,
+    localía, forma reciente) vía get_historical_dataset_with_meta."""
+    df_hist, n_real_games = get_historical_dataset_with_meta(league, n_samples=n_samples)
+    X = extract_features(df_hist)
+    y_corners = df_hist["total_corners"] if "total_corners" in df_hist.columns else None
+
+    model = MetaEnsembleSportsModel()
+    model.fit(X, df_hist["home_win"], df_hist["margin"], df_hist["total_points"], y_corners=y_corners)
+
+    model_path = os.path.join(MODEL_DIR, f"model_{league}.joblib")
+    try:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        joblib.dump(model, model_path)
+        source = "espn_real" if n_real_games >= 30 else ("blend" if n_real_games >= 8 else "sintetico")
+        _write_meta(league, n_real_games=n_real_games, source=source)
+        logger.info(f"{league}: modelo entrenado y guardado ({n_real_games} partidos reales, fuente={source})")
+    except Exception as e:
+        logger.info(f"No se pudo guardar el modelo de {league} en disco: {e}")
+
+    MODELS_CACHE[league] = model
+    return model
+
+
+def retrain_all_leagues_job() -> None:
+    """Job programado (APScheduler) que reentrena y persiste el modelo de
+    cada liga usando los últimos resultados reales disponibles. Corre solo,
+    sin depender de deploys ni de que llegue tráfico -- así el modelo se
+    actualiza con la cadencia que vos definís (RETRAIN_INTERVAL_HOURS) y no
+    con la cadencia de tus `git push`."""
+    logger.info("Iniciando retrain programado de todas las ligas...")
+    for league in ALL_LEAGUES:
+        try:
+            _train_league_model(league, n_samples=1200)
+        except Exception as e:
+            logger.error(f"Retrain programado falló para {league}: {e}")
+    logger.info("Retrain programado completado.")
+
+
+def _model_is_stale(league: str) -> bool:
+    meta = _read_meta(league)
+    if not meta:
+        return True
+    try:
+        trained_at = datetime.fromisoformat(meta["trained_at"])
+        age_hours = (datetime.now(timezone.utc) - trained_at).total_seconds() / 3600.0
+        return age_hours >= RETRAIN_INTERVAL_HOURS
+    except Exception:
+        return True
 
 
 class MatchupPredictRequest(BaseModel):
@@ -442,23 +588,26 @@ def calculate_parlay(req: ParlayRequest):
 
 @app.post("/api/retrain")
 def retrain_models(req: RetrainRequest):
-    df_hist = get_historical_dataset(req.league, n_samples=1200)
+    df_hist, n_real_games = get_historical_dataset_with_meta(req.league, n_samples=1200)
     X = extract_features(df_hist)
-    
-    # Custom training
+    y_corners = df_hist["total_corners"] if "total_corners" in df_hist.columns else None
+
+    # Custom training (hiperparámetros del usuario vía ModelTrainerUI)
     new_model = MetaEnsembleSportsModel(svm_weight=0.15, nn_weight=0.20, rf_weight=0.15, xgb_weight=0.25, lgbm_weight=0.25)
     new_model.svm.c = req.svm_c
     new_model.svm.kernel = req.svm_kernel
     new_model.nn.learning_rate_init = req.nn_learning_rate
     new_model.nn.hidden_layer_sizes = (req.nn_hidden_size, req.nn_hidden_size // 2)
 
-    new_model.fit(X, df_hist["home_win"], df_hist["margin"], df_hist["total_points"])
-    
+    new_model.fit(X, df_hist["home_win"], df_hist["margin"], df_hist["total_points"], y_corners=y_corners)
+
     # Save & Cache
     try:
         os.makedirs(MODEL_DIR, exist_ok=True)
         model_path = os.path.join(MODEL_DIR, f"model_{req.league}.joblib")
         joblib.dump(new_model, model_path)
+        source = "espn_real" if n_real_games >= 30 else ("blend" if n_real_games >= 8 else "sintetico")
+        _write_meta(req.league, n_real_games=n_real_games, source=source)
     except Exception as e:
         logger.info(f"No se pudo guardar el modelo en disco (Read-only filesystem): {e}")
     MODELS_CACHE[req.league] = new_model
@@ -466,8 +615,21 @@ def retrain_models(req: RetrainRequest):
     return {
         "message": f"Modelo para {req.league} re-entrenado exitosamente",
         "parameters": req.dict(),
+        "n_real_games_used": n_real_games,
         "status": "ready"
     }
+
+
+@app.get("/api/model-status")
+def model_status():
+    """Transparencia: qué modelo está sirviendo cada liga ahora mismo y con
+    qué datos fue entrenado -- útil para ver de un vistazo si LCUP está
+    usando datos reales de ESPN, la mezcla, o todavía el fallback sintético."""
+    status = {}
+    for league in ALL_LEAGUES:
+        meta = _read_meta(league)
+        status[league] = meta or {"league": league, "trained_at": None, "n_real_games": None, "data_source": "no entrenado aún"}
+    return status
 
 if __name__ == "__main__":
     import uvicorn

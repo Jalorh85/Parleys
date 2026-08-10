@@ -41,6 +41,19 @@ logger = logging.getLogger(__name__)
 
 MLB_SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/summary"
 
+# Cuántos días hacia atrás buscar partidos TERMINADOS, por liga. 180 días
+# funciona bien para ligas que juegan casi todo el año (MLB, WNBA, MX,
+# LCUP), pero la NFL tiene una offseason larga (~feb-ago): consultada en
+# pretemporada (como ahora, agosto), una ventana de 180 días cae casi
+# entera en offseason y solo encuentra 0-1 partidos, cayendo al fallback
+# sintético aunque exista una temporada regular + playoffs completa recién
+# terminada en enero/febrero. 400 días asegura cubrir toda la temporada
+# anterior de la NFL sin importar en qué mes del año se consulte.
+LEAGUE_LOOKBACK_DAYS: Dict[str, int] = {
+    "NFL": 400,
+}
+DEFAULT_LOOKBACK_DAYS = 180
+
 # Ligas de fútbol cubiertas -> slug ESPN usado en la URL del summary (boxscore)
 # LCUP usa el mismo slug que sports_api.py (concacaf.leagues.cup) — antes
 # faltaba acá, lo que significaba que la Leagues Cup nunca traía córners
@@ -186,8 +199,10 @@ def fetch_completed_games(league: str, start_date: date, end_date: date) -> List
 # 2. Ratings de equipo reales
 # ---------------------------------------------------------------------------
 
-def generate_team_profiles_from_espn(league: str, lookback_days: int = 180) -> Dict[str, Dict]:
+def generate_team_profiles_from_espn(league: str, lookback_days: Optional[int] = None) -> Dict[str, Dict]:
     """Calcula ratings ofensivo/defensivo/home_adv/pace REALES de la temporada."""
+    if lookback_days is None:
+        lookback_days = LEAGUE_LOOKBACK_DAYS.get(league, DEFAULT_LOOKBACK_DAYS)
     end = date.today()
     start = end - timedelta(days=lookback_days)
     games = fetch_completed_games(league, start, end)
@@ -307,7 +322,7 @@ def _cumulative_era(cum_er: float, cum_ip: float, default: float = 4.20) -> floa
 
 def generate_historical_dataset_from_espn(
     league: str,
-    lookback_days: int = 180,
+    lookback_days: Optional[int] = None,
     include_pitcher_era: bool = True,
     max_games_for_era: Optional[int] = 400,
 ) -> pd.DataFrame:
@@ -315,11 +330,18 @@ def generate_historical_dataset_from_espn(
     Construye un DataFrame con el mismo esquema que generate_historical_dataset(),
     con resultados reales y (para MLB) ERA real acumulado del abridor.
 
+    lookback_days: si no se especifica, usa LEAGUE_LOOKBACK_DAYS[league] (o
+        DEFAULT_LOOKBACK_DAYS si la liga no tiene un valor propio). Ligas con
+        offseason larga (NFL) necesitan una ventana más amplia para no
+        quedarse sin partidos reales cuando se consulta en pretemporada.
     max_games_for_era: límite de partidos a los que se les busca boxscore
         (cada uno es un request HTTP adicional). None = sin límite (lento).
         Si se trunca, los partidos más antiguos del rango se saltan el ERA
         real y usan el default de liga.
     """
+    if lookback_days is None:
+        lookback_days = LEAGUE_LOOKBACK_DAYS.get(league, DEFAULT_LOOKBACK_DAYS)
+
     end = date.today()
     start = end - timedelta(days=lookback_days)
     games = fetch_completed_games(league, start, end)
