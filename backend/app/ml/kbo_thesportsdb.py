@@ -136,6 +136,13 @@ def _parse_thesportsdb_event(ev: Dict, date_str: str, idx: int, logos: Dict[str,
         away_raw = ev.get("strAwayTeam", "")
 
         if not home_raw or not away_raw:
+            # Antes esto se descartaba en silencio -- si algún día faltan
+            # partidos, este log deja ver exactamente cuál evento se cayó
+            # y por qué (nombre de equipo vacío en la respuesta de la API).
+            logger.warning(
+                f"KBO: evento descartado por falta de nombre de equipo "
+                f"(idEvent={ev.get('idEvent')}, strEvent={ev.get('strEvent')})"
+            )
             return None
 
         home_team = normalize_kbo_team(home_raw)
@@ -169,15 +176,64 @@ def _parse_thesportsdb_event(ev: Dict, date_str: str, idx: int, logos: Dict[str,
         return None
 
 
+# ---------------------------------------------------------------------
+# Respaldo: calendario completo de la temporada.
+#
+# eventsday.php a veces no trae TODOS los partidos de un día puntual para
+# ligas "menores" como la KBO (ej. juegos de doble cartelera o partidos
+# suspendidos y reprogramados que la API no siempre indexa bien en el
+# endpoint "por día"). eventsseason.php sí trae el calendario completo de
+# la temporada en una sola llamada -- lo usamos como red de seguridad:
+# cualquier partido de esa fecha que eventsday.php no haya traído, se
+# rellena desde acá, cruzando por idEvent para no duplicar.
+# ---------------------------------------------------------------------
+_season_schedule_cache: Dict[str, List[Dict]] = {}
+
+
+def _get_kbo_season_schedule(season: str) -> List[Dict]:
+    if season in _season_schedule_cache:
+        return _season_schedule_cache[season]
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(
+                f"{_base_url()}/eventsseason.php",
+                params={"id": KBO_LEAGUE_ID, "s": season},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.TimeoutException:
+        logger.error(f"Timeout al traer calendario de temporada KBO ({season})")
+        return []
+    except httpx.HTTPError as e:
+        logger.error(f"Error HTTP calendario de temporada KBO: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Error inesperado calendario de temporada KBO: {e}")
+        return []
+
+    events = data.get("events") or []
+    if events:
+        _season_schedule_cache[season] = events
+        logger.info(f"Calendario de temporada KBO {season} cacheado: {len(events)} partidos")
+    return events
+
+
 def fetch_kbo_fixtures(target_date: date) -> List[Dict]:
     """
     Punto de entrada principal: partidos reales de KBO + logos oficiales,
     vía TheSportsDB v1. Retorna [] si hay error o no hay partidos ese día
     (mismo contrato que get_real_fixtures de ESPN, para que el fallback
     simulado en data_generator.py siga funcionando).
+
+    Combina eventsday.php (rápido, específico del día) con eventsseason.php
+    (calendario completo de temporada) como red de seguridad, porque
+    eventsday.php puede venir incompleto para ligas menores como la KBO
+    (ver _get_kbo_season_schedule).
     """
     date_str = target_date.strftime("%Y-%m-%d")
 
+    events: List[Dict] = []
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(
@@ -186,17 +242,39 @@ def fetch_kbo_fixtures(target_date: date) -> List[Dict]:
             )
             resp.raise_for_status()
             data = resp.json()
+            events = data.get("events") or []
     except httpx.TimeoutException:
         logger.error(f"Timeout al consultar TheSportsDB KBO ({date_str})")
-        return []
     except httpx.HTTPError as e:
         logger.error(f"Error HTTP TheSportsDB KBO: {e}")
-        return []
     except Exception as e:
         logger.error(f"Error inesperado TheSportsDB KBO: {e}")
-        return []
 
-    events = data.get("events") or []
+    n_from_day_endpoint = len(events)
+
+    # Red de seguridad: completar con el calendario de temporada, por si
+    # eventsday.php se quedó corto para esta fecha.
+    season = str(target_date.year)
+    season_events = _get_kbo_season_schedule(season)
+    if season_events:
+        seen_ids = {str(e.get("idEvent")) for e in events}
+        added = 0
+        for ev in season_events:
+            if ev.get("dateEvent") != date_str:
+                continue
+            ev_id = str(ev.get("idEvent"))
+            if ev_id in seen_ids:
+                continue
+            events.append(ev)
+            seen_ids.add(ev_id)
+            added += 1
+        if added:
+            logger.info(
+                f"KBO {date_str}: eventsday.php trajo {n_from_day_endpoint} partidos, "
+                f"se completaron {added} más desde el calendario de temporada "
+                f"(total {len(events)})"
+            )
+
     if not events:
         logger.info(f"TheSportsDB: sin partidos de KBO para el {date_str}")
         return []
