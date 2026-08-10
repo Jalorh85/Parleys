@@ -11,7 +11,7 @@ MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "models")
 
 def train_and_save_all_leagues():
     os.makedirs(MODEL_DIR, exist_ok=True)
-    leagues = ["LCUP", "MLB", "WNBA", "KBO", "MX"]
+    leagues = ["LCUP", "MLB", "WNBA", "KBO", "MX", "NFL"]
     results = {}
 
     for league in leagues:

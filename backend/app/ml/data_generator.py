@@ -24,6 +24,18 @@ _MLS_TEAMS = [
     "St. Louis City SC", "Toronto FC", "Vancouver Whitecaps"
 ]
 
+# --- Los 32 equipos de la NFL (nombres EXACTOS que usa ESPN, ver sports_api.py) ---
+_NFL_TEAMS = [
+    "Arizona Cardinals", "Atlanta Falcons", "Baltimore Ravens", "Buffalo Bills",
+    "Carolina Panthers", "Chicago Bears", "Cincinnati Bengals", "Cleveland Browns",
+    "Dallas Cowboys", "Denver Broncos", "Detroit Lions", "Green Bay Packers",
+    "Houston Texans", "Indianapolis Colts", "Jacksonville Jaguars", "Kansas City Chiefs",
+    "Las Vegas Raiders", "Los Angeles Chargers", "Los Angeles Rams", "Miami Dolphins",
+    "Minnesota Vikings", "New England Patriots", "New Orleans Saints", "New York Giants",
+    "New York Jets", "Philadelphia Eagles", "Pittsburgh Steelers", "San Francisco 49ers",
+    "Seattle Seahawks", "Tampa Bay Buccaneers", "Tennessee Titans", "Washington Commanders"
+]
+
 LEAGUE_TEAMS = {
     "LCUP": _MX_TEAMS + _MLS_TEAMS,  # Leagues Cup 2026 — Liga MX vs MLS/Canadá
     "MLB": [
@@ -49,7 +61,8 @@ LEAGUE_TEAMS = {
         "Doosan Bears", "KIA Tigers", "Lotte Giants", "Samsung Lions",
         "Hanwha Eagles", "Kiwoom Heroes"
     ],
-    "MX": _MX_TEAMS
+    "MX": _MX_TEAMS,
+    "NFL": _NFL_TEAMS
 }
 
 LEAGUE_BASE_TOTALS = {
@@ -57,7 +70,9 @@ LEAGUE_BASE_TOTALS = {
     "MLB": (8.5, 2.1),
     "WNBA": (163.5, 9.5),
     "KBO": (9.8, 2.4),
-    "MX": (2.6, 1.4)        # Goles totales por partido (fútbol)
+    "MX": (2.6, 1.4),       # Goles totales por partido (fútbol)
+    "NFL": (43.5, 13.5)     # Puntos totales por partido (histórico NFL ~43-45; Pretemporada
+                             # es algo más volátil por rotación de roster, de ahí el std alto)
 }
 
 LEAGUE_BASE_MARGINS = {
@@ -65,7 +80,8 @@ LEAGUE_BASE_MARGINS = {
     "MLB": (0.0, 3.2),
     "WNBA": (0.0, 9.8),
     "KBO": (0.0, 3.5),
-    "MX": (0.0, 1.6)        # Diferencia de goles
+    "MX": (0.0, 1.6),       # Diferencia de goles
+    "NFL": (0.0, 14.0)      # Diferencia de puntos
 }
 
 # Media/std de tiros de esquina TOTALES por partido (solo aplica a fútbol -> MX, LCUP)
@@ -87,6 +103,16 @@ SOCCER_TOTAL_CLIP = (1.0, 5.5)     # goles totales esperados
 
 # Ligas de béisbol (comparten la misma escala de carreras).
 BASEBALL_LEAGUES = ["MLB", "KBO"]
+
+# Fútbol americano (NFL). Misma razón que fútbol/béisbol: los ratings están
+# normalizados en escala NBA (off_rating/def_rating ~100±10, home_adv 2-5,
+# form en [0,1]) y hay que comprimirlos a la escala real de puntos de la NFL
+# (~43.5 puntos totales, margen con std ~14) en vez de sumarlos punto por
+# punto como en baloncesto -- si no, el sesgo esperado se dispara muy por
+# encima de lo que un partido de NFL produce realmente.
+FOOTBALL_LEAGUES = ["NFL"]
+FOOTBALL_MARGIN_CLIP = (-24.0, 24.0)   # diferencia de puntos esperada
+FOOTBALL_TOTAL_CLIP = (28.0, 62.0)     # puntos totales esperados
 
 # Igual que con fútbol: la rama "genérica" de más abajo está calibrada para
 # baloncesto (ratings ~100±10, puntajes ~100-225). Aplicada sin ajustar a
@@ -154,6 +180,24 @@ def estimate_matchup_bias(league: str, h_prof: Dict, a_prof: Dict,
 
         expected_total = mean_tot + (h_prof["off_rating"] + a_prof["off_rating"] - 200) * 0.05
         expected_total = float(np.clip(expected_total, *BASEBALL_TOTAL_CLIP))
+    elif league in FOOTBALL_LEAGUES:
+        # Coeficientes propios de fútbol americano: off_rating/def_rating y
+        # form se comprimen a fracciones de punto de NFL en vez de sumarse
+        # 1:1 como en baloncesto. home_adv (2-5, ya en escala de puntos de
+        # ventaja de local) se deja casi intacto porque coincide de forma
+        # razonable con el home field advantage real de la NFL (~2-3 pts).
+        def_diff = a_prof["def_rating"] - h_prof["def_rating"]
+        expected_margin = (
+            off_diff * 0.28
+            + def_diff * 0.28
+            + h_prof["home_adv"] * 1.0
+            + (home_form - away_form) * 8.0
+            + (home_rest - away_rest) * 1.0
+        )
+        expected_margin = float(np.clip(expected_margin, *FOOTBALL_MARGIN_CLIP))
+
+        expected_total = mean_tot + (h_prof["off_rating"] + a_prof["off_rating"] - 200) * 0.15
+        expected_total = float(np.clip(expected_total, *FOOTBALL_TOTAL_CLIP))
     else:
         def_diff = a_prof["def_rating"] - h_prof["def_rating"]
         expected_margin = (
@@ -192,12 +236,14 @@ LEAGUE_TOTAL_EDGE_THRESHOLD = {
     "LCUP": 0.4,
     "MLB": 0.8,
     "KBO": 0.8,
+    "NFL": 3.0,   # sobre un total ~43.5 pts, equivalente proporcional a los otros
 }
 LEAGUE_MARGIN_EDGE_THRESHOLD = {
     "MX": 0.35,
     "LCUP": 0.35,
     "MLB": 0.6,
     "KBO": 0.6,
+    "NFL": 2.0,
 }
 LEAGUE_CORNERS_EDGE_THRESHOLD = {
     "MX": 0.6,
@@ -283,7 +329,7 @@ def generate_historical_dataset(league: str, n_samples: int = 1200,
         expected_total = bias["expected_total"] - (era_diff * 0.5) + pace_factor
         actual_total = max(0.0 if league in SOCCER_LEAGUES else 1.0, expected_total + np.random.normal(0, std_tot))
 
-        if league in ["MLB", "KBO"] + SOCCER_LEAGUES:
+        if league in ["MLB", "KBO"] + SOCCER_LEAGUES + FOOTBALL_LEAGUES:
             actual_margin = np.round(actual_margin)
             actual_total = np.round(actual_total, 1)
 

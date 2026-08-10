@@ -28,7 +28,8 @@ export default function MatchPredictor({ activeLeague, leagues }) {
   const [sbHomeOdds, setSbHomeOdds] = useState(1.85);
   const [sbAwayOdds, setSbAwayOdds] = useState(2.05);
   const [sbSpread, setSbSpread] = useState(-3.5);
-  const [sbTotal, setSbTotal] = useState(activeLeague === 'MLB' || activeLeague === 'KBO' ? 8.5 : 218.5);
+  const isBaseballDefault = activeLeague === 'MLB' || activeLeague === 'KBO';
+  const [sbTotal, setSbTotal] = useState(isBaseballDefault ? 8.5 : (activeLeague === 'NFL' ? 43.5 : 218.5));
 
   const [predictionResult, setPredictionResult] = useState(null);
   const [loading, setLoading] = useState(false);

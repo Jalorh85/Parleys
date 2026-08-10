@@ -13,7 +13,7 @@
 [![Live Demo](https://img.shields.io/badge/DEMO_ONLINE-pronosticos--ia.netlify.app-00C7B7?style=for-the-badge&logo=netlify&logoColor=white)](https://pronosticos-ia.netlify.app/)
 
 <p align="center">
-  <b>Plataforma Full-Stack de Machine Learning Meta-Ensemble para la predicción de eventos deportivos (Liga MX, Leagues Cup 2026, NBA, MLB, WNBA, KBO) y optimización de apuestas combinadas (Parleys) con detección de valor +EV en tiempo real.</b>
+  <b>Plataforma Full-Stack de Machine Learning Meta-Ensemble para la predicción de eventos deportivos (Liga MX, Leagues Cup 2026, NBA, MLB, WNBA, KBO, <strong>NFL Pretemporada</strong>) y optimización de apuestas combinadas (Parleys) con detección de valor +EV en tiempo real.</b>
   <br/><br/>
   🚀 <b>Demostración en vivo disponible en:</b> <a href="https://pronosticos-ia.netlify.app/"><b>https://pronosticos-ia.netlify.app/</b></a>
 </p>
@@ -50,6 +50,7 @@
 - 📈 **Detección de Apuestas con Valor (+EV):** Algoritmo automatizado que calcula el *Expected Value* comparando probabilidades de IA contra las cuotas implícitas de las casas de apuestas.
 - 🌐 **Integración Dual (ESPN API + TheSportsDB API):** Descarga partidos en vivo, resultados históricos, horarios UTC y logotipos oficiales de los equipos para todas las ligas.
 - 🇲🇽 **Soporte Especializado para Fútbol (Liga MX y Leagues Cup 2026):** Incluye modelo dedicado de regresión para predicción de **Córners Totales** en partidos de fútbol.
+- 🏈 **NFL Pretemporada con Datos Históricos Reales:** Integración completa de la Pretemporada NFL descargando datos históricos de partidos jugados desde **ESPN API** (temporadas 2021-2025) y logos oficiales de equipos vía **TheSportsDB API**. El modelo se entrena con resultados reales de preseason, incluyendo ratings ofensivo/defensivo, ventaja de local y form de equipo ajustados a la volatilidad del preseason NFL.
 - 🧮 **Calculadora e Creador de Parleys:** Genera apuestas combinadas personalizadas calculando cuotas compuestas, rendimiento estimado y evaluación de riesgo.
 - 📊 **Backtester & Batalla de Modelos:** Módulo visual para comparar el rendimiento histórico de cada modelo individual (SVM vs Red Neuronal vs Random Forest vs XGBoost vs LightGBM).
 - 🎨 **Diseño Moderno & Glassmorphism:** Interfaz futurista optimizada en modo oscuro con respuestas dinámicas de estado e iconos interactivos.
@@ -90,7 +91,7 @@ graph TD
 
 ---
 
-## ⚽ Ligas Soportadas y Datos en Vivo (ESPN API & TheSportsDB API)
+## ⚽🏈 Ligas Soportadas y Datos en Vivo (ESPN API & TheSportsDB API)
 
 El sistema procesa información en tiempo real combinando las APIs de **ESPN** y **TheSportsDB**:
 
@@ -98,10 +99,29 @@ El sistema procesa información en tiempo real combinando las APIs de **ESPN** y
 | :--- | :--- | :--- | :--- |
 | 🇲🇽 **Liga MX (`MX`)** | Fútbol | ESPN API + TheSportsDB | Ganador, Margen, Goles Totales, **Córners Totales** |
 | 🏆 **Leagues Cup 2026 (`LCUP`)** | Fútbol | ESPN API + TheSportsDB | Ganador, Margen, Goles Totales |
-| 🏀 **NBA (`NBA`)** | Baloncesto | ESPN API + TheSportsDB | Ganador, Hándicap/Spread, Puntos Totales |
-| ⚾ **MLB (`MLB`)** | Béisbol | ESPN API + TheSportsDB (30 Equipos) | Ganador, Runline, Carrera Totales, ERA Pitcher |
+| ⚾ **MLB (`MLB`)** | Béisbol | ESPN API + TheSportsDB (30 Equipos) | Ganador, Runline, Carreras Totales, ERA Pitcher |
 | ⛹️‍♀️ **WNBA (`WNBA`)** | Baloncesto | ESPN API (Incluye expansión 2026) | Ganador, Hándicap/Spread, Puntos Totales |
-| ⚾ **KBO (`KBO`)** | Béisbol | TheSportsDB + Fallback Simulado | Ganador, Runline, Carrera Totales |
+| ⚾ **KBO (`KBO`)** | Béisbol | TheSportsDB + Fallback Simulado | Ganador, Runline, Carreras Totales |
+| 🏈 **NFL Pretemporada (`NFL`)** | Fútbol Americano | ESPN API (histórico real 2021–2025) + TheSportsDB (logos) | Ganador, Spread/Hándicap, Puntos Totales |
+
+### 🏈 NFL Pretemporada — Integración de Datos Históricos Reales
+
+La liga NFL usa un pipeline de datos históricos real basado en ESPN API y TheSportsDB:
+
+```
+ESPN API (football/nfl/scoreboard)
+  └── seasontype=1  → Pretemporada (agosto)
+  └── seasontype=2  → Temporada Regular (sep-ene)
+  └── seasontype=3  → Playoffs / Super Bowl
+```
+
+| Fuente | Uso |
+| :--- | :--- |
+| **ESPN Scoreboard API** | Partidos en vivo y próximos (pretemporada y regular). Consulta automática por `dates` sin parámetro extra de `seasontype` — ESPN resuelve la temporada activa. |
+| **ESPN Historical API** | Resultados terminados de temporadas 2021–2025 (preseason + regular) para entrenar el Meta-Ensemble con datos reales de puntos y márgenes NFL. |
+| **TheSportsDB API** | Logos oficiales de los 32 equipos NFL (badge transparent PNG), badge de la liga y mapeo de nombres de equipos entre fuentes. |
+
+**Equipos cubiertos (32 franquicias):** Arizona Cardinals, Atlanta Falcons, Baltimore Ravens, Buffalo Bills, Carolina Panthers, Chicago Bears, Cincinnati Bengals, Cleveland Browns, Dallas Cowboys, Denver Broncos, Detroit Lions, Green Bay Packers, Houston Texans, Indianapolis Colts, Jacksonville Jaguars, Kansas City Chiefs, Las Vegas Raiders, Los Angeles Chargers, Los Angeles Rams, Miami Dolphins, Minnesota Vikings, New England Patriots, New Orleans Saints, New York Giants, New York Jets, Philadelphia Eagles, Pittsburgh Steelers, San Francisco 49ers, Seattle Seahawks, Tampa Bay Buccaneers, Tennessee Titans, Washington Commanders.
 
 ---
 
@@ -232,11 +252,12 @@ El proyecto está 100% preparado con archivos de configuración serverless indep
 
 | Método | Endpoint | Descripción |
 | :---: | :--- | :--- |
-| `GET` | `/api/leagues` | Obtiene la lista de ligas soportadas (`MX`, `LCUP`, `NBA`, `MLB`, `WNBA`, `KBO`) |
+| `GET` | `/api/leagues` | Obtiene la lista de ligas soportadas (`MX`, `LCUP`, `MLB`, `WNBA`, `KBO`, `NFL`) |
 | `GET` | `/api/fixtures?league=MX&date=YYYY-MM-DD` | Devuelve los partidos del día con predicciones del Meta-Ensemble (incluye córners para Liga MX) |
-| `POST` | `/api/predict` | Realiza una predicción personalizada 1v1 entre dos equipos |
-| `GET` | `/api/backtest?league=MLB` | Ejecuta la simulación de rendimiento histórico (+EV ROI) |
-| `POST` | `/api/train?league=WNBA` | Re-entrena el Meta-Ensemble con datos actualizados de ESPN / TheSportsDB |
+| `GET` | `/api/fixtures?league=NFL&date=YYYY-MM-DD` | Partidos de Pretemporada NFL con predicciones de spread y total (datos reales ESPN) |
+| `POST` | `/api/predict` | Realiza una predicción personalizada 1v1 entre dos equipos (soporta `NFL`) |
+| `GET` | `/api/backtest?league=NFL` | Simulación histórica de rendimiento NFL con datos reales de pretemporada (ESPN 2021-2025) |
+| `POST` | `/api/train?league=NFL` | Re-entrena el Meta-Ensemble NFL con datos históricos reales de ESPN + TheSportsDB |
 
 ---
 

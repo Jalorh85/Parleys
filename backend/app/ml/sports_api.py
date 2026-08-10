@@ -1,6 +1,7 @@
 """
 sports_api.py — Obtiene partidos reales de ESPN (gratis, sin key requerida).
 Cobertura: MLB ✅  WNBA ✅  MX ✅ (Liga MX, mex.1)  LCUP ✅ (Leagues Cup 2026, concacaf.leagues.cup)
+           NFL ✅ (incluye Pretemporada — ESPN devuelve preseason al consultar por fecha)
            KBO ❌ (usa TheSportsDB)
 
 Documentación ESPN API (no oficial):
@@ -25,6 +26,10 @@ ESPN_ENDPOINTS = {
     "WNBA": "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard",
     "MX":   "https://site.api.espn.com/apis/site/v2/sports/soccer/mex.1/scoreboard",
     "LCUP": "https://site.api.espn.com/apis/site/v2/sports/soccer/concacaf.leagues.cup/scoreboard",
+    # NFL: el mismo endpoint de scoreboard devuelve Pretemporada (Preseason)
+    # cuando se consulta con el parámetro "dates" en las fechas correspondientes
+    # -- no hace falta un slug/seasontype especial, ESPN lo resuelve solo.
+    "NFL":  "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
     # KBO no está en ESPN → usará TheSportsDB (ver kbo_thesportsdb.py)
 }
 
@@ -146,6 +151,41 @@ TEAM_NAME_MAP: Dict[str, str] = {
     "Toronto FC":               "Toronto FC",
     "Vancouver Whitecaps":      "Vancouver Whitecaps",
     "Vancouver Whitecaps FC":   "Vancouver Whitecaps",
+
+    # --- NFL (32 equipos) — nombres EXACTOS confirmados vía ESPN /teams
+    # para football/nfl y coinciden con los que usa TheSportsDB (liga 4391) ---
+    "Arizona Cardinals":        "Arizona Cardinals",
+    "Atlanta Falcons":          "Atlanta Falcons",
+    "Baltimore Ravens":         "Baltimore Ravens",
+    "Buffalo Bills":            "Buffalo Bills",
+    "Carolina Panthers":        "Carolina Panthers",
+    "Chicago Bears":            "Chicago Bears",
+    "Cincinnati Bengals":       "Cincinnati Bengals",
+    "Cleveland Browns":         "Cleveland Browns",
+    "Dallas Cowboys":           "Dallas Cowboys",
+    "Denver Broncos":           "Denver Broncos",
+    "Detroit Lions":            "Detroit Lions",
+    "Green Bay Packers":        "Green Bay Packers",
+    "Houston Texans":           "Houston Texans",
+    "Indianapolis Colts":       "Indianapolis Colts",
+    "Jacksonville Jaguars":     "Jacksonville Jaguars",
+    "Kansas City Chiefs":       "Kansas City Chiefs",
+    "Las Vegas Raiders":        "Las Vegas Raiders",
+    "Los Angeles Chargers":     "Los Angeles Chargers",
+    "Los Angeles Rams":         "Los Angeles Rams",
+    "Miami Dolphins":           "Miami Dolphins",
+    "Minnesota Vikings":        "Minnesota Vikings",
+    "New England Patriots":     "New England Patriots",
+    "New Orleans Saints":       "New Orleans Saints",
+    "New York Giants":          "New York Giants",
+    "New York Jets":            "New York Jets",
+    "Philadelphia Eagles":      "Philadelphia Eagles",
+    "Pittsburgh Steelers":      "Pittsburgh Steelers",
+    "San Francisco 49ers":      "San Francisco 49ers",
+    "Seattle Seahawks":         "Seattle Seahawks",
+    "Tampa Bay Buccaneers":     "Tampa Bay Buccaneers",
+    "Tennessee Titans":         "Tennessee Titans",
+    "Washington Commanders":    "Washington Commanders",
 }
 
 # También agregar equipos nuevos a la lista de equipos del modelo para WNBA
@@ -292,8 +332,8 @@ def fetch_espn_fixtures(league: str, target_date: date) -> List[Dict]:
 def get_real_fixtures(league: str, target_date: Optional[date] = None) -> List[Dict]:
     """
     Punto de entrada principal. Cada liga usa su mejor fuente real:
-      - MLB / WNBA / MX / LCUP -> ESPN (gratis, sin key)
-      - KBO                    -> TheSportsDB v1 (gratis, temporada 2026 activa)
+      - MLB / WNBA / MX / LCUP / NFL -> ESPN (gratis, sin key; NFL incluye Pretemporada)
+      - KBO                          -> TheSportsDB v1 (gratis, temporada 2026 activa)
     Si no hay datos reales, retorna [] y data_generator.py cae al fallback simulado.
     """
     if target_date is None:

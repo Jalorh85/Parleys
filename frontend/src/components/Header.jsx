@@ -6,12 +6,14 @@ import { Cpu, Activity, BarChart2, Layers, TrendingUp, Settings } from 'lucide-r
 // en vez de pegarle a la API desde el frontend en cada render.
 // LCUP: badge oficial de la Leagues Cup, confirmado contra
 // thesportsdb.com/league/5281-leagues-cup
+// NFL: badge oficial confirmado contra thesportsdb.com/league/4391-nfl
 const LEAGUE_LOGOS = {
   LCUP: 'https://r2.thesportsdb.com/images/media/league/badge/8dqvox1650475851.png',
   MLB: 'https://r2.thesportsdb.com/images/media/league/badge/c5r83j1521893739.png',
   WNBA: 'https://r2.thesportsdb.com/images/media/league/badge/47llb31573154455.png',
   KBO: 'https://r2.thesportsdb.com/images/media/league/badge/qfr1hx1589707979.png',
   MX: 'https://r2.thesportsdb.com/images/media/league/badge/mav5rx1686157960.png',
+  NFL: 'https://r2.thesportsdb.com/images/media/league/badge/g85fqz1662057187.png',
 };
 
 const LEAGUE_LABELS = {
@@ -20,6 +22,7 @@ const LEAGUE_LABELS = {
   WNBA: 'WNBA',
   KBO: 'KBO (Corea)',
   MX: 'Liga MX',
+  NFL: 'NFL (Pretemporada)',
 };
 
 export default function Header({ activeLeague, setActiveLeague, activeTab, setActiveTab, leagues }) {
@@ -98,7 +101,7 @@ export default function Header({ activeLeague, setActiveLeague, activeTab, setAc
 
         {/* League Selector Pills */}
         <div style={{ display: 'flex', gap: '0.5rem', background: 'rgba(0,0,0,0.3)', padding: '5px', borderRadius: '14px', flexWrap: 'wrap' }}>
-          {['LCUP', 'MLB', 'WNBA', 'KBO', 'MX'].map(lg => (
+          {['LCUP', 'MLB', 'WNBA', 'KBO', 'MX', 'NFL'].map(lg => (
             <button
               key={lg}
               onClick={() => setActiveLeague(lg)}

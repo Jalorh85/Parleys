@@ -29,7 +29,7 @@ from app.ml.espn_historical import (
 
 app = FastAPI(
     title="PARLEYS AI - Sports Prediction & Machine Learning Engine (2026)",
-    description="APIs for NBA, MLB, WNBA, KBO predictions using SVM, Neural Networks, Random Forest, XGBoost & LightGBM",
+    description="APIs for NFL, MLB, WNBA, KBO, MX & LCUP predictions using SVM, Neural Networks, Random Forest, XGBoost & LightGBM",
     version="1.0.0"
 )
 
@@ -188,7 +188,7 @@ def root():
     return {
         "status": "online",
         "system": "PARLEYS AI Prediction Engine 2026",
-        "leagues_supported": ["LCUP", "MLB", "WNBA", "KBO", "MX"],
+        "leagues_supported": ["LCUP", "MLB", "WNBA", "KBO", "MX", "NFL"],
         "models": ["Support Vector Machines (SVM)", "Neural Networks (MLP)", "Random Forest", "XGBoost", "LightGBM", "Meta-Ensemble"]
     }
 
