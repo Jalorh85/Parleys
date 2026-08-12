@@ -31,6 +31,22 @@ export async function fetchMetrics(league) {
   return res.json();
 }
 
+export async function fetchAccuracy(league = null, days = 30) {
+  const params = new URLSearchParams({ days: String(days) });
+  if (league) params.append('league', league);
+  const res = await fetch(`${API_BASE}/accuracy?${params}`);
+  if (!res.ok) throw new Error('Error al cargar precisión real');
+  return res.json();
+}
+
+export async function fetchBankroll(league = null, days = 90, stake = 10, onlyValueBets = true) {
+  const params = new URLSearchParams({ days: String(days), stake: String(stake), only_value_bets: String(onlyValueBets) });
+  if (league) params.append('league', league);
+  const res = await fetch(`${API_BASE}/bankroll?${params}`);
+  if (!res.ok) throw new Error('Error al cargar simulación de bankroll');
+  return res.json();
+}
+
 export async function runBacktest(payload) {
   const res = await fetch(`${API_BASE}/backtest`, {
     method: 'POST',

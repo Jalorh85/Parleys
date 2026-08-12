@@ -1,5 +1,5 @@
-import React from 'react';
-import { ShieldAlert, Zap, TrendingUp, WifiOff, RefreshCw, CalendarX } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { ShieldAlert, Zap, TrendingUp, WifiOff, RefreshCw, CalendarX, SlidersHorizontal, ArrowUpDown, Scale, ChevronDown, ChevronUp, Lightbulb } from 'lucide-react';
 import TeamIcon from './TeamIcon';
 
 // Convierte home_win_prob a texto "%","—" si el modelo no vino en la respuesta
@@ -8,6 +8,35 @@ const modelPct = (model) =>
   model?.home_win_prob != null ? `${(model.home_win_prob * 100).toFixed(0)}%` : '—';
 
 export default function DailyFixtures({ fixtures, loading, error, selectedDate, onRetry, noDataMessage }) {
+  // Hooks SIEMPRE arriba de cualquier `return` condicional (loading/error/
+  // vacío) -- si no, React pierde el orden de hooks entre renders.
+  const [filterMode, setFilterMode] = useState('all'); // 'all' | 'ev' | 'confidence'
+  const [sortMode, setSortMode] = useState('time'); // 'time' | 'confidence'
+  const [expandedExplanations, setExpandedExplanations] = useState({}); // fixture_id -> bool
+
+  const toggleExplanation = (fixtureId) => {
+    setExpandedExplanations(prev => ({ ...prev, [fixtureId]: !prev[fixtureId] }));
+  };
+
+  const visibleFixtures = useMemo(() => {
+    if (!fixtures || fixtures.length === 0) return [];
+    let list = [...fixtures];
+
+    if (filterMode === 'ev') {
+      list = list.filter(f => (f.prediction?.ensemble?.value_ev_pct ?? 0) > 0);
+    } else if (filterMode === 'confidence') {
+      list = list.filter(f => (f.prediction?.ensemble?.confidence ?? 0) >= 65);
+    }
+
+    if (sortMode === 'confidence') {
+      list.sort((a, b) => (b.prediction?.ensemble?.confidence ?? -1) - (a.prediction?.ensemble?.confidence ?? -1));
+    } else {
+      list.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    }
+
+    return list;
+  }, [fixtures, filterMode, sortMode]);
+
   if (loading) {
     return (
       <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
@@ -51,7 +80,7 @@ export default function DailyFixtures({ fixtures, loading, error, selectedDate, 
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.8rem' }}>
         <div>
           <h2 style={{ fontSize: '1.3rem', fontWeight: 700 }}>
             Partidos de la Temporada 2026 & Pronósticos ML
@@ -66,8 +95,57 @@ export default function DailyFixtures({ fixtures, loading, error, selectedDate, 
         </span>
       </div>
 
+      {/* Controles de filtro/orden */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap',
+        marginBottom: '1.2rem', padding: '0.6rem 0.8rem',
+        background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px',
+      }}>
+        <SlidersHorizontal size={15} color="var(--text-muted)" />
+        {[
+          { key: 'all', label: 'Todos' },
+          { key: 'ev', label: '+EV' },
+          { key: 'confidence', label: 'Alta Confianza' },
+        ].map(opt => (
+          <button
+            key={opt.key}
+            onClick={() => setFilterMode(opt.key)}
+            className={filterMode === opt.key ? 'btn-primary' : 'btn-secondary'}
+            style={{ fontSize: '0.75rem', padding: '0.3rem 0.7rem' }}
+          >
+            {opt.label}
+          </button>
+        ))}
+
+        <span style={{ width: '1px', height: '18px', background: 'rgba(255,255,255,0.1)', margin: '0 0.2rem' }} />
+
+        <ArrowUpDown size={15} color="var(--text-muted)" />
+        {[
+          { key: 'time', label: 'Hora' },
+          { key: 'confidence', label: 'Confianza' },
+        ].map(opt => (
+          <button
+            key={opt.key}
+            onClick={() => setSortMode(opt.key)}
+            className={sortMode === opt.key ? 'btn-primary' : 'btn-secondary'}
+            style={{ fontSize: '0.75rem', padding: '0.3rem 0.7rem' }}
+          >
+            {opt.label}
+          </button>
+        ))}
+
+        <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          {visibleFixtures.length} de {fixtures.length} partidos
+        </span>
+      </div>
+
+      {visibleFixtures.length === 0 ? (
+        <div className="glass-panel" style={{ padding: '2rem', textAlign: 'center' }}>
+          <p style={{ color: 'var(--text-muted)' }}>Ningún partido de hoy cumple este filtro. Probá con "Todos".</p>
+        </div>
+      ) : (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: '1.2rem' }}>
-        {fixtures.map((fix) => {
+        {visibleFixtures.map((fix) => {
           const hasPrediction = !!fix.prediction?.ensemble;
           const ens = fix.prediction?.ensemble || {};
           const models = fix.prediction?.models_breakdown || {};
@@ -193,6 +271,31 @@ export default function DailyFixtures({ fixtures, loading, error, selectedDate, 
                         LightGBM: {modelPct(models.LightGBM)} Local
                       </span>
                     </div>
+
+                    {/* Modelo vs Mercado — solo cuando hay cuota REAL (the-odds-api.com)
+                        de fondo; con cuota estimada no hay mercado real con qué comparar */}
+                    {ens.blended_with_market && (
+                      <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                          <Scale size={13} />
+                          Modelo vs Mercado (cuota real) — Local
+                        </div>
+                        <div style={{ display: 'flex', gap: '10px', fontSize: '0.78rem' }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>Solo modelo</div>
+                            <strong>{(ens.model_only_home_win_prob * 100).toFixed(1)}%</strong>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>Mercado</div>
+                            <strong>{(ens.market_implied_home_prob * 100).toFixed(1)}%</strong>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>Final (mezcla)</div>
+                            <strong style={{ color: '#00f2fe' }}>{(ens.home_win_prob * 100).toFixed(1)}%</strong>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -227,6 +330,36 @@ export default function DailyFixtures({ fixtures, loading, error, selectedDate, 
                 )}
               </div>
 
+              {/* ¿Por qué esta predicción? — colapsable, usa fix.explanation
+                  (generado en el backend a partir de los mismos features
+                  que ya usa el modelo, ver _build_explanation en data_generator.py) */}
+              {hasPrediction && fix.explanation && fix.explanation.length > 0 && (
+                <div style={{ marginBottom: '0.8rem' }}>
+                  <button
+                    onClick={() => toggleExplanation(fix.fixture_id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '6px', width: '100%',
+                      background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)',
+                      borderRadius: '8px', padding: '0.5rem 0.7rem', fontSize: '0.8rem',
+                      color: 'var(--text-main)', cursor: 'pointer',
+                    }}
+                  >
+                    <Lightbulb size={14} color="#f5a623" />
+                    <span style={{ flex: 1, textAlign: 'left' }}>¿Por qué esta predicción?</span>
+                    {expandedExplanations[fix.fixture_id] ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </button>
+                  {expandedExplanations[fix.fixture_id] && (
+                    <ul style={{
+                      margin: '6px 0 0', padding: '0.6rem 0.9rem 0.6rem 1.6rem',
+                      background: 'rgba(245,166,35,0.05)', border: '1px solid rgba(245,166,35,0.15)',
+                      borderRadius: '8px', fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.6,
+                    }}>
+                      {fix.explanation.map((reason, i) => <li key={i}>{reason}</li>)}
+                    </ul>
+                  )}
+                </div>
+              )}
+
               {/* Pick sugerido (solo informativo — sin acción de agregar a parlay) */}
               <div style={{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -242,6 +375,7 @@ export default function DailyFixtures({ fixtures, loading, error, selectedDate, 
           );
         })}
       </div>
+      )}
     </div>
   );
 }

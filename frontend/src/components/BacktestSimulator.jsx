@@ -1,6 +1,39 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { TrendingUp, DollarSign, Play, Activity } from 'lucide-react';
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
+} from 'recharts';
 import { runBacktest } from '../services/api';
+
+function formatMoney(value) {
+  const sign = value < 0 ? '-' : '';
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function BankrollTooltip({ active, payload, startBankroll }) {
+  if (!active || !payload || !payload.length) return null;
+  const point = payload[0].payload;
+  const delta = point.bankroll - startBankroll;
+  return (
+    <div style={{
+      background: 'rgba(15,17,26,0.95)',
+      border: '1px solid rgba(255,255,255,0.15)',
+      borderRadius: '10px',
+      padding: '0.6rem 0.8rem',
+      fontSize: '0.78rem',
+      color: '#ffffff',
+      boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+    }}>
+      <div style={{ fontWeight: 700, marginBottom: '4px' }}>
+        {point.bet === 0 ? 'Capital inicial' : `Apuesta #${point.bet}`}
+      </div>
+      <div style={{ color: 'var(--text-muted)' }}>{formatMoney(point.bankroll)}</div>
+      <div style={{ marginTop: '2px', fontWeight: 700, color: delta >= 0 ? '#10b981' : '#ef4444' }}>
+        {delta >= 0 ? '+' : ''}{formatMoney(delta)} vs. inicial
+      </div>
+    </div>
+  );
+}
 
 export default function BacktestSimulator({ activeLeague }) {
   const [initialBankroll, setInitialBankroll] = useState(1000);
@@ -39,14 +72,17 @@ export default function BacktestSimulator({ activeLeague }) {
   const res = backtestData || {};
   const progression = res.bankroll_progression || [];
 
-  // Calculate SVG line points for bankroll chart
-  const maxB = Math.max(...progression, initialBankroll * 1.5);
-  const minB = Math.min(...progression, initialBankroll * 0.7);
-  const pointsStr = progression.map((val, idx) => {
-    const x = (idx / (progression.length - 1 || 1)) * 500;
-    const y = 150 - ((val - minB) / (maxB - minB || 1)) * 130;
-    return `${x},${y}`;
-  }).join(' ');
+  const chartData = useMemo(() => {
+    if (!progression.length) return [];
+    const start = res.initial_bankroll ?? Number(initialBankroll);
+    return [
+      { bet: 0, bankroll: start },
+      ...progression.map((val, idx) => ({ bet: idx + 1, bankroll: val })),
+    ];
+  }, [progression, res.initial_bankroll, initialBankroll]);
+
+  const startBankroll = res.initial_bankroll ?? Number(initialBankroll);
+  const accentColor = res.net_profit >= 0 ? '#10b981' : '#ef4444';
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.3fr', gap: '1.5rem', alignItems: 'start' }}>
@@ -124,17 +160,48 @@ export default function BacktestSimulator({ activeLeague }) {
               </div>
             </div>
 
-            {/* Bankroll Progression SVG Chart */}
+            {/* Bankroll Progression Chart */}
             <div style={{ background: 'rgba(0,0,0,0.4)', borderRadius: '12px', padding: '1rem', marginBottom: '1.2rem' }}>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>Evolución del Capital (Bankroll Growth):</div>
-              <svg viewBox="0 0 500 160" style={{ width: '100%', height: '140px', overflow: 'visible' }}>
-                <polyline
-                  fill="none"
-                  stroke="#10b981"
-                  strokeWidth="3"
-                  points={pointsStr}
-                />
-              </svg>
+              <div style={{ width: '100%', height: 180 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartData} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="backtestFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={accentColor} stopOpacity={0.35} />
+                        <stop offset="100%" stopColor={accentColor} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                    <XAxis
+                      dataKey="bet"
+                      tickFormatter={v => v === 0 ? 'Inicio' : `#${v}`}
+                      tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
+                      axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+                      tickLine={false}
+                      minTickGap={24}
+                    />
+                    <YAxis
+                      tickFormatter={v => `$${v}`}
+                      tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={52}
+                    />
+                    <ReferenceLine y={startBankroll} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 4" />
+                    <Tooltip content={<BankrollTooltip startBankroll={startBankroll} />} cursor={{ stroke: 'rgba(255,255,255,0.15)' }} />
+                    <Area
+                      type="monotone"
+                      dataKey="bankroll"
+                      stroke={accentColor}
+                      strokeWidth={2.5}
+                      fill="url(#backtestFill)"
+                      dot={false}
+                      activeDot={{ r: 4, fill: accentColor, stroke: '#0f111a', strokeWidth: 2 }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
             </div>
 
             {/* Recent Trades Table */}

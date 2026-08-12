@@ -307,6 +307,92 @@ def generate_team_profiles(league: str) -> Dict[str, Dict]:
         }
     return profiles
 
+
+def get_team_profiles_with_real_fallback(league: str) -> Dict[str, Dict]:
+    """
+    Perfiles de equipo PARA USAR EN PREDICCIONES: reales (ESPN, derivados de
+    carreras/puntos anotados y recibidos en la temporada real) si hay
+    partidos jugados suficientes; para KBO (que no está en ESPN) reales de
+    TheSportsDB; si ninguna fuente real cubre un equipo, se completa con el
+    perfil sintético (np.random) para que ningún equipo de LEAGUE_TEAMS
+    quede sin perfil.
+
+    Este es el punto ÚNICO de perfiles "listos para predecir". Antes,
+    _enrich_fixture_with_profiles() -- la función que arma cada partido
+    REAL que ve el usuario en el dashboard -- llamaba directo a
+    generate_team_profiles(league), el generador 100% SINTÉTICO. Eso
+    significaba que el off_rating/def_rating/home_adv de un partido real de
+    MLB no tenían ninguna relación con qué tan bueno es ese equipo en la
+    temporada real -- eran ruido reproducible (mismo partido, mismo
+    número falso, pero sin señal real detrás). Con esas tres variables
+    siendo ruido, una precisión cercana al 50% (moneda al aire) es
+    exactamente lo esperable, no un fallo del ensemble en sí.
+
+    Import de espn_historical hecho DENTRO de la función (no al tope del
+    archivo) a propósito: espn_historical.py importa de data_generator.py,
+    así que un import a nivel de módulo acá crearía un import circular.
+    """
+    profiles: Dict[str, Dict] = {}
+    try:
+        from app.ml.espn_historical import generate_team_profiles_from_espn
+        profiles = generate_team_profiles_from_espn(league) or {}
+    except Exception as e:
+        logger.warning(f"No se pudieron obtener perfiles reales de ESPN para {league}: {e}")
+
+    if not profiles and league == "KBO":
+        try:
+            from app.ml.kbo_thesportsdb import get_real_kbo_team_profiles
+            profiles = get_real_kbo_team_profiles() or {}
+        except Exception as e:
+            logger.warning(f"No se pudieron obtener perfiles reales de KBO (TheSportsDB): {e}")
+
+    if not profiles:
+        return generate_team_profiles(league)
+
+    if len(profiles) < len(LEAGUE_TEAMS.get(league, [])):
+        merged = generate_team_profiles(league)
+        merged.update(profiles)
+        return merged
+
+    return profiles
+
+
+def get_real_form_and_rest_for_league(league: str, as_of_date: date) -> Dict[str, Dict]:
+    """
+    Forma/descanso reales por equipo (ver espn_historical.get_real_form_and_rest),
+    listos para pasarle a _enrich_fixture_with_profiles(). Best-effort: si
+    ESPN falla o la liga no tiene cobertura, devuelve {} y cada partido cae
+    de vuelta al fallback aleatorio dentro de _enrich_fixture_with_profiles
+    (nunca rompe la respuesta de /api/fixtures).
+
+    Import local (no al tope del archivo) por la misma razón que en
+    get_team_profiles_with_real_fallback: espn_historical.py importa de
+    data_generator.py, un import a nivel de módulo acá sería circular.
+    """
+    try:
+        from app.ml.espn_historical import get_real_form_and_rest
+        return get_real_form_and_rest(league, as_of_date) or {}
+    except Exception as e:
+        logger.warning(f"No se pudo calcular forma/descanso reales para {league}: {e}")
+        return {}
+
+
+def get_real_odds_events_for_league(league: str) -> List[Dict]:
+    """
+    Eventos con cuotas reales de la liga (ver odds_api.get_real_odds_events),
+    listos para pasarle a _enrich_fixture_with_profiles(). Best-effort: sin
+    ODDS_API_KEY seteada, o si la liga no está en el catálogo de
+    the-odds-api.com (LCUP, KBO), devuelve [] sin gastar créditos y cada
+    partido sigue usando la cuota estimada de siempre.
+    """
+    try:
+        from app.ml.odds_api import get_real_odds_events
+        return get_real_odds_events(league) or []
+    except Exception as e:
+        logger.warning(f"No se pudieron obtener cuotas reales para {league}: {e}")
+        return []
+
+
 def generate_historical_dataset(league: str, n_samples: int = 1200,
                                  profiles: Optional[Dict[str, Dict]] = None) -> pd.DataFrame:
     """
@@ -412,6 +498,59 @@ def generate_historical_dataset(league: str, n_samples: int = 1200,
 
     return pd.DataFrame(rows)
 
+def _build_explanation(home_team: str, away_team: str, h_prof: Dict, a_prof: Dict,
+                       home_form: float, away_form: float, form_rest_is_real: bool,
+                       home_rest: int, away_rest: int,
+                       h_era: float, a_era: float, era_is_real: bool, league: str) -> List[str]:
+    """
+    Explicación en lenguaje natural de las señales más fuertes detrás de la
+    predicción -- reglas simples y transparentes sobre los mismos features
+    que ya usa el modelo (nada nuevo, solo lo hace legible). Máximo 4
+    razones, ordenadas por qué tan grande es la diferencia entre equipos,
+    para no saturar la tarjeta con ruido de diferencias chicas.
+    """
+    candidates = []  # (magnitud, texto) -- se ordena por magnitud antes de recortar a 4
+
+    form_diff = home_form - away_form
+    if abs(form_diff) >= 0.12:
+        leader, pct = (home_team, home_form) if form_diff > 0 else (away_team, away_form)
+        tag = "real" if form_rest_is_real else "estimada"
+        candidates.append((abs(form_diff), f"{leader} llega con mejor forma reciente ({round(pct * 100)}% en sus últimos partidos, {tag})"))
+
+    rest_diff = home_rest - away_rest
+    if abs(rest_diff) >= 2:
+        leader = home_team if rest_diff > 0 else away_team
+        candidates.append((abs(rest_diff) * 0.1, f"{leader} llega con más días de descanso"))
+
+    off_diff = h_prof["off_rating"] - a_prof["off_rating"]
+    if abs(off_diff) >= 5:
+        leader, val = (home_team, h_prof["off_rating"]) if off_diff > 0 else (away_team, a_prof["off_rating"])
+        candidates.append((abs(off_diff) * 0.05, f"{leader} tiene mejor ataque esta temporada (rating {round(val, 1)})"))
+
+    def_diff = a_prof["def_rating"] - h_prof["def_rating"]  # positivo = home tiene mejor defensa (permite menos)
+    if abs(def_diff) >= 5:
+        leader, val = (home_team, h_prof["def_rating"]) if def_diff > 0 else (away_team, a_prof["def_rating"])
+        candidates.append((abs(def_diff) * 0.05, f"{leader} tiene mejor defensa esta temporada (rating {round(val, 1)})"))
+
+    if league in BASEBALL_LEAGUES and h_era and a_era:
+        era_diff = a_era - h_era  # positivo = home tiene ERA más bajo (mejor)
+        if abs(era_diff) >= 0.4:
+            leader, val = (home_team, h_era) if era_diff > 0 else (away_team, a_era)
+            tag = "real" if era_is_real else "estimado"
+            candidates.append((abs(era_diff), f"Abridor de {leader} con mejor efectividad (ERA {val}, {tag})"))
+
+    if h_prof["home_adv"] >= 3.5:
+        candidates.append((h_prof["home_adv"] * 0.05, f"{home_team} tiene una ventaja de local marcada esta temporada"))
+
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    reasons = [text for _, text in candidates[:4]]
+
+    if not reasons:
+        reasons.append("Partido parejo — ninguna señal domina claramente entre estos dos equipos")
+
+    return reasons
+
+
 def _enrich_fixture_with_profiles(home_team: str, away_team: str, league: str,
                                   date_str: str, idx: int,
                                   fixture_id: str = None,
@@ -419,24 +558,59 @@ def _enrich_fixture_with_profiles(home_team: str, away_team: str, league: str,
                                   source: str = "Simulado",
                                   home_pitcher_era_real=None,
                                   away_pitcher_era_real=None,
+                                  profiles: Optional[Dict[str, Dict]] = None,
+                                  form_rest: Optional[Dict[str, Dict]] = None,
+                                  odds_events: Optional[List[Dict]] = None,
                                   **kwargs) -> Dict:
     """
     Dado un partido (home_team vs away_team) genera los features que necesita
-    el modelo ML y las líneas de casas de apuestas estimadas.
-    """
-    profiles = generate_team_profiles(league)
+    el modelo ML y las líneas de casas de apuestas.
 
-    # Semilla determinista por partido para que los valores sean reproducibles
+    profiles: perfiles de equipo YA resueltos (reales de ESPN/TheSportsDB
+        con fallback sintético, ver get_team_profiles_with_real_fallback)
+        para reutilizar entre todos los partidos de una misma llamada a
+        get_upcoming_fixtures() -- evita recalcular/refetchear perfiles por
+        cada fixture. Si no se pasa, se resuelven acá con la misma
+        prioridad real->sintético (pensado para llamar esta función suelta,
+        ej. tests o scripts).
+    form_rest: forma/descanso YA resueltos (reales de ESPN, ver
+        get_real_form_and_rest_for_league) -- mismo motivo que profiles.
+        Si un equipo no tiene suficiente muestra real (< 3 partidos), cae
+        al fallback aleatorio de siempre para ESE equipo puntual.
+    odds_events: eventos con cuotas reales YA resueltos (the-odds-api.com,
+        ver get_real_odds_events_for_league) -- si hay match para este
+        partido, sb_home_odds/sb_away_odds/sb_spread/sb_total se
+        reemplazan por la línea real; si no, quedan las estimadas.
+    """
+    if profiles is None:
+        profiles = get_team_profiles_with_real_fallback(league)
+
+    # Semilla determinista por partido para que los valores aleatorios de
+    # fallback sean reproducibles
     seed = _stable_seed(f"{date_str}{home_team}{away_team}") % (2**31)
     rng = np.random.default_rng(seed)
 
     h_prof = profiles.get(home_team, {"off_rating": 100, "def_rating": 100, "home_adv": 3.0, "pace": 100, "pitching_era": 3.85})
     a_prof = profiles.get(away_team, {"off_rating": 100, "def_rating": 100, "home_adv": 0.0, "pace": 100, "pitching_era": 3.95})
 
-    home_rest = int(rng.choice([0, 1, 2, 3], p=[0.2, 0.5, 0.2, 0.1]))
-    away_rest = int(rng.choice([0, 1, 2, 3], p=[0.25, 0.5, 0.2, 0.05]))
-    home_form = round(float(np.clip(rng.normal(0.58, 0.15), 0.1, 0.95)), 2)
-    away_form = round(float(np.clip(rng.normal(0.50, 0.15), 0.1, 0.95)), 2)
+    # --- Forma/descanso: usar los reales de ESPN si hay muestra suficiente,
+    # si no, el fallback aleatorio (equipos de expansión, ligas sin
+    # cobertura ESPN, arranque de temporada sin historial todavía, etc.) ---
+    h_fr = (form_rest or {}).get(home_team)
+    a_fr = (form_rest or {}).get(away_team)
+    form_rest_is_real = bool(h_fr and a_fr and h_fr.get("games_sampled", 0) >= 3 and a_fr.get("games_sampled", 0) >= 3)
+
+    if h_fr and h_fr.get("games_sampled", 0) >= 3:
+        home_rest, home_form = h_fr["rest"], h_fr["form"]
+    else:
+        home_rest = int(rng.choice([0, 1, 2, 3], p=[0.2, 0.5, 0.2, 0.1]))
+        home_form = round(float(np.clip(rng.normal(0.58, 0.15), 0.1, 0.95)), 2)
+
+    if a_fr and a_fr.get("games_sampled", 0) >= 3:
+        away_rest, away_form = a_fr["rest"], a_fr["form"]
+    else:
+        away_rest = int(rng.choice([0, 1, 2, 3], p=[0.25, 0.5, 0.2, 0.05]))
+        away_form = round(float(np.clip(rng.normal(0.50, 0.15), 0.1, 0.95)), 2)
 
     h_pitcher = f"Pitcher {home_team[:3].upper()}" if league in ["MLB", "KBO"] else "N/A"
     a_pitcher = f"Pitcher {away_team[:3].upper()}" if league in ["MLB", "KBO"] else "N/A"
@@ -475,12 +649,35 @@ def _enrich_fixture_with_profiles(home_team: str, away_team: str, league: str,
     sb_home_odds = round(float(1.0 / p_home if p_home > 0.05 else 12.0), 2)
     sb_away_odds = round(float(1.0 / (1 - p_home) if p_home < 0.95 else 12.0), 2)
 
+    # --- Cuotas reales (the-odds-api.com) si hay match para este partido --
+    # si no, quedan las estimadas de arriba. Nunca puede romper la
+    # respuesta: cualquier error acá se ignora y sigue con la estimada.
+    odds_source = "estimado"
+    if odds_events:
+        try:
+            from app.ml.odds_api import match_fixture_odds
+            real_odds = match_fixture_odds(odds_events, home_team, away_team)
+            if real_odds:
+                sb_home_odds = real_odds["sb_home_odds"]
+                sb_away_odds = real_odds["sb_away_odds"]
+                sb_spread = real_odds.get("sb_spread", sb_spread)
+                sb_total = real_odds.get("sb_total", sb_total)
+                odds_source = "real"
+        except Exception as e:
+            logger.warning(f"No se pudo aplicar cuota real para {home_team} vs {away_team}: {e}")
+
     # Línea estimada de córners totales — solo aplica a ligas de fútbol (MX, LCUP)
     sb_corners_total = None
     if league in SOCCER_LEAGUES:
         mean_corn, _ = LEAGUE_BASE_CORNERS.get(league, (10.0, 3.0))
         corner_bias = (h_prof["off_rating"] + a_prof["off_rating"] - 200) * 0.03
         sb_corners_total = round(float(mean_corn + corner_bias), 1)
+
+    explanation = _build_explanation(
+        home_team, away_team, h_prof, a_prof,
+        home_form, away_form, form_rest_is_real,
+        home_rest, away_rest, h_era, a_era, era_is_real, league,
+    )
 
     return {
         "fixture_id": fixture_id or f"FIX-{league}-{date_str}-{idx}",
@@ -493,6 +690,7 @@ def _enrich_fixture_with_profiles(home_team: str, away_team: str, league: str,
         "away_rest": away_rest,
         "home_form": home_form,
         "away_form": away_form,
+        "form_rest_is_real": form_rest_is_real,   # badge de transparencia en el frontend
         "h_pitcher": h_pitcher,
         "a_pitcher": a_pitcher,
         "h_pitcher_era": h_era,
@@ -509,6 +707,8 @@ def _enrich_fixture_with_profiles(home_team: str, away_team: str, league: str,
         "sb_spread": sb_spread,
         "sb_total": sb_total,
         "sb_corners_total": sb_corners_total,
+        "odds_source": odds_source,   # "real" (the-odds-api.com) o "estimado"
+        "explanation": explanation,   # razones en lenguaje natural para el panel "¿Por qué esta predicción?"
         "source": source,
         "home_logo": kwargs.get("home_logo", ""),
         "away_logo": kwargs.get("away_logo", ""),
@@ -544,7 +744,19 @@ def get_upcoming_fixtures(league: str, target_date: Optional[date] = None, count
         real_fixtures = []
 
     if real_fixtures:
-        # Enriquecer los partidos reales con perfiles ML, líneas estimadas y ERA real si existe
+        # Perfiles reales (ESPN / TheSportsDB, con fallback sintético) UNA
+        # sola vez por request -- antes cada partido llamaba a
+        # generate_team_profiles(league) por su cuenta (100% sintético),
+        # ver get_team_profiles_with_real_fallback().
+        profiles = get_team_profiles_with_real_fallback(league)
+
+        # Forma/descanso reales y cuotas reales -- también UNA sola vez por
+        # request (no por partido): un solo fetch de ESPN histórico y un
+        # solo request a the-odds-api.com traen los datos de TODOS los
+        # partidos del día de esta liga de una vez.
+        form_rest = get_real_form_and_rest_for_league(league, target_date)
+        odds_events = get_real_odds_events_for_league(league)
+
         enriched = []
         for idx, fix in enumerate(real_fixtures):
             enriched.append(_enrich_fixture_with_profiles(
@@ -560,6 +772,9 @@ def get_upcoming_fixtures(league: str, target_date: Optional[date] = None, count
                 away_logo=fix.get("away_logo", ""),
                 home_pitcher_era_real=fix.get("home_pitcher_era_real"),
                 away_pitcher_era_real=fix.get("away_pitcher_era_real"),
+                profiles=profiles,
+                form_rest=form_rest,
+                odds_events=odds_events,
             ))
         return enriched
 

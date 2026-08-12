@@ -28,10 +28,12 @@ Limitaciones honestas:
 
 import httpx
 import logging
+import os
 import time
+import threading
 import numpy as np
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 from app.ml.sports_api import ESPN_ENDPOINTS, normalize_team
@@ -196,6 +198,41 @@ def fetch_completed_games(league: str, start_date: date, end_date: date) -> List
 
 
 # ---------------------------------------------------------------------------
+# 1.5 Cache de partidos terminados -- ANTES, generate_team_profiles_from_espn()
+#     y get_real_form_and_rest() hacían CADA UNA su propio fetch_completed_games
+#     sobre ventanas de fechas que en la práctica coinciden casi siempre
+#     (ambas normalizan end_date a hoy más abajo), así que /api/fixtures
+#     descargaba el mismo histórico de ESPN dos veces en cada request, sin
+#     cachear nada entre requests tampoco. Este wrapper resuelve ambos
+#     problemas: dedupe dentro del mismo request Y cache entre requests.
+# ---------------------------------------------------------------------------
+
+_completed_games_cache: Dict[str, Dict] = {}
+_completed_games_cache_lock = threading.Lock()
+COMPLETED_GAMES_CACHE_TTL_MINUTES = float(os.environ.get("COMPLETED_GAMES_CACHE_TTL_MINUTES", "30"))
+
+
+def fetch_completed_games_cached(league: str, start_date: date, end_date: date) -> List[Dict]:
+    """Misma firma que fetch_completed_games(), pero cacheada
+    COMPLETED_GAMES_CACHE_TTL_MINUTES minutos por (liga, start, end) exactos.
+    Con TTL=30min, varias cargas del dashboard en esa ventana reusan el
+    mismo histórico en vez de volver a pegarle a ESPN cada vez."""
+    key = f"{league}:{start_date.isoformat()}:{end_date.isoformat()}"
+
+    with _completed_games_cache_lock:
+        cached = _completed_games_cache.get(key)
+        if cached and (datetime.now(timezone.utc) - cached["fetched_at"]) < timedelta(minutes=COMPLETED_GAMES_CACHE_TTL_MINUTES):
+            return cached["games"]
+
+    games = fetch_completed_games(league, start_date, end_date)
+
+    with _completed_games_cache_lock:
+        _completed_games_cache[key] = {"fetched_at": datetime.now(timezone.utc), "games": games}
+
+    return games
+
+
+# ---------------------------------------------------------------------------
 # 2. Ratings de equipo reales
 # ---------------------------------------------------------------------------
 
@@ -205,7 +242,7 @@ def generate_team_profiles_from_espn(league: str, lookback_days: Optional[int] =
         lookback_days = LEAGUE_LOOKBACK_DAYS.get(league, DEFAULT_LOOKBACK_DAYS)
     end = date.today()
     start = end - timedelta(days=lookback_days)
-    games = fetch_completed_games(league, start, end)
+    games = fetch_completed_games_cached(league, start, end)
 
     if not games:
         logger.warning(f"Sin partidos reales para calcular perfiles de {league}")
@@ -247,6 +284,72 @@ def generate_team_profiles_from_espn(league: str, lookback_days: Optional[int] =
 # ---------------------------------------------------------------------------
 # 3. ERA real por partido (boxscore) — solo MLB
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 2.5 Forma reciente y descanso REALES (mismo cálculo que usa el
+#     entrenamiento en generate_historical_dataset_from_espn, para que un
+#     partido en vivo se sirva con la MISMA definición de "forma"/"descanso"
+#     con la que el modelo aprendió, en vez de ruido aleatorio)
+# ---------------------------------------------------------------------------
+
+def get_real_form_and_rest(league: str, as_of_date: date, lookback_days: Optional[int] = None) -> Dict[str, Dict]:
+    """
+    Racha de los últimos 10 resultados (form, 0-1) y días de descanso
+    (rest, 0-3) REALES de cada equipo, calculados con exactamente la misma
+    lógica que generate_historical_dataset_from_espn() usa para entrenar
+    (ver last_played/recent_results ahí) -- antes, el partido de HOY se
+    servía con estos dos valores 100% aleatorios (ver _enrich_fixture_with_
+    profiles en data_generator.py), aunque el modelo sí había aprendido con
+    la versión real. Esto cierra ese desajuste train/serve.
+
+    as_of_date: se usan solo partidos con fecha ANTERIOR a esta -- nunca el
+        propio partido que se está por predecir (sin fuga de información).
+        No puede haber partidos "completed" después de hoy, así que el
+        fetch en sí se acota a min(as_of_date, hoy) -- con eso, cuando
+        as_of_date es "mañana" (el caso normal al armar los partidos del
+        día), esta ventana queda idéntica a la que usa
+        generate_team_profiles_from_espn() y ambas reusan el mismo cache
+        (ver fetch_completed_games_cached) en vez de pedirle a ESPN dos
+        veces el mismo histórico en un mismo request.
+    """
+    if lookback_days is None:
+        lookback_days = LEAGUE_LOOKBACK_DAYS.get(league, DEFAULT_LOOKBACK_DAYS)
+
+    fetch_end = min(as_of_date, date.today())
+    start = fetch_end - timedelta(days=lookback_days)
+    games = fetch_completed_games_cached(league, start, fetch_end)
+    if not games:
+        return {}
+
+    df = pd.DataFrame(games)
+    df["date"] = pd.to_datetime(df["date"])
+    as_of_ts = pd.Timestamp(as_of_date)
+    df = df[df["date"] < as_of_ts].sort_values("date")
+
+    last_played: Dict[str, pd.Timestamp] = {}
+    recent_results: Dict[str, List[int]] = {}
+
+    for _, g in df.iterrows():
+        home, away = g["home_team"], g["away_team"]
+        home_win = 1 if g["home_score"] > g["away_score"] else 0
+        last_played[home] = g["date"]
+        last_played[away] = g["date"]
+        recent_results.setdefault(home, []).append(home_win)
+        recent_results.setdefault(away, []).append(1 - home_win)
+        recent_results[home] = recent_results[home][-10:]
+        recent_results[away] = recent_results[away][-10:]
+
+    result = {}
+    for team in last_played:
+        rest = max(0, min(3, (as_of_ts - last_played[team]).days - 1))
+        form = float(np.mean(recent_results.get(team, [0.5])))
+        result[team] = {
+            "rest": rest,
+            "form": round(form, 2),
+            "games_sampled": len(recent_results.get(team, [])),
+        }
+    return result
+
 
 def fetch_boxscore_starters(event_id: str, client: httpx.Client) -> Dict[str, Dict]:
     """
@@ -344,7 +447,7 @@ def generate_historical_dataset_from_espn(
 
     end = date.today()
     start = end - timedelta(days=lookback_days)
-    games = fetch_completed_games(league, start, end)
+    games = fetch_completed_games_cached(league, start, end)
 
     if len(games) < 30:
         logger.warning(f"Solo {len(games)} partidos reales para {league} — insuficiente")

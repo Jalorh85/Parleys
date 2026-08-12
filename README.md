@@ -13,7 +13,7 @@
 [![Live Demo](https://img.shields.io/badge/DEMO_ONLINE-pronosticos--ia.netlify.app-00C7B7?style=for-the-badge&logo=netlify&logoColor=white)](https://pronosticos-ia.netlify.app/)
 
 <p align="center">
-  <b>Plataforma Full-Stack de Machine Learning Meta-Ensemble para la predicción de eventos deportivos (Liga MX, Leagues Cup 2026, NBA, MLB, WNBA, KBO, <strong>NFL Pretemporada</strong>) y optimización de apuestas combinadas (Parleys) con detección de valor +EV en tiempo real.</b>
+  <b>Plataforma Full-Stack de Machine Learning Meta-Ensemble para la predicción de eventos deportivos (Liga MX, Leagues Cup 2026, NBA, MLB, WNBA, KBO, <strong>NFL Pretemporada</strong>), integración de cuotas en tiempo real vía <strong>The Odds API</strong>, visualización interactiva con <strong>Recharts</strong> y optimización de apuestas combinadas (Parleys) con detección de valor +EV en tiempo real.</b>
   <br/><br/>
   🚀 <b>Demostración en vivo disponible en:</b> <a href="https://pronosticos-ia.netlify.app/"><b>https://pronosticos-ia.netlify.app/</b></a>
 </p>
@@ -47,12 +47,14 @@
 ## 🌟 Aspectos Destacados
 
 - 🧠 **Meta-Ensemble Ponderado:** Combina 5 modelos de IA avanzados para maximizar la precisión de predicción en probabilidad de victoria, hándicap, totales Over/Under y córners.
-- 📈 **Detección de Apuestas con Valor (+EV):** Algoritmo automatizado que calcula el *Expected Value* comparando probabilidades de IA contra las cuotas implícitas de las casas de apuestas.
-- 🌐 **Integración Dual (ESPN API + TheSportsDB API):** Descarga partidos en vivo, resultados históricos, horarios UTC y logotipos oficiales de los equipos para todas las ligas.
+- 💰 **Integración con The Odds API:** Compara las probabilidades predichas por la IA contra cuotas reales del mercado deportivo en EE.UU. (sportsbooks en tiempo real via *the-odds-api.com* v4) para encontrar verdadero valor esperado (+EV).
+- 📊 **Gráficas Interactivas con Recharts:** Visualización avanzada de datos mediante gráficos de área, barras, líneas y radar para la evolución de bankroll, precisión real de predicciones y comparación multidimensional entre modelos.
+- 📈 **Detección de Apuestas con Valor (+EV) & Reconciliación Real:** Algoritmo automatizado que calcula el *Expected Value* y registra predicciones para reconciliarlas automáticamente al día siguiente contra resultados reales de ESPN.
+- 🌐 **Integración Multifuente (ESPN API + TheSportsDB API + The Odds API):** Descarga partidos en vivo, resultados históricos, horarios UTC, cuotas reales de mercado y logotipos oficiales de equipos para todas las ligas.
 - 🇲🇽 **Soporte Especializado para Fútbol (Liga MX y Leagues Cup 2026):** Incluye modelo dedicado de regresión para predicción de **Córners Totales** en partidos de fútbol.
-- 🏈 **NFL Pretemporada con Datos Históricos Reales:** Integración completa de la Pretemporada NFL descargando datos históricos de partidos jugados desde **ESPN API** (temporadas 2021-2025) y logos oficiales de equipos vía **TheSportsDB API**. El modelo se entrena con resultados reales de preseason, incluyendo ratings ofensivo/defensivo, ventaja de local y form de equipo ajustados a la volatilidad del preseason NFL.
+- 🏈 **NFL Pretemporada con Datos Históricos Reales:** Integración completa de la Pretemporada NFL descargando datos históricos de partidos jugados desde **ESPN API** (temporadas 2021-2025) y logos oficiales de equipos vía **TheSportsDB API**.
 - 🧮 **Calculadora e Creador de Parleys:** Genera apuestas combinadas personalizadas calculando cuotas compuestas, rendimiento estimado y evaluación de riesgo.
-- 📊 **Backtester & Batalla de Modelos:** Módulo visual para comparar el rendimiento histórico de cada modelo individual (SVM vs Red Neuronal vs Random Forest vs XGBoost vs LightGBM).
+- 📊 **Backtester & Batalla de Modelos:** Módulo visual e interactivo para comparar el rendimiento histórico y métricas de cada modelo individual (SVM vs Red Neuronal vs Random Forest vs XGBoost vs LightGBM).
 - 🎨 **Diseño Moderno & Glassmorphism:** Interfaz futurista optimizada en modo oscuro con respuestas dinámicas de estado e iconos interactivos.
 
 ---
@@ -131,13 +133,15 @@ ESPN API (football/nfl/scoreboard)
 - **FastAPI 0.111** — Framework web asíncrono de alto rendimiento.
 - **Scikit-Learn 1.5** — Preprocesamiento, escalado y modelos SVM / Random Forest / MLP.
 - **Pandas & NumPy** — Manipulación matricial y feature engineering de vectores deportivos.
-- **HTTPX** — Cliente HTTP asíncrono para consumo de **ESPN API** y **TheSportsDB API**.
+- **HTTPX** — Cliente HTTP asíncrono para consumo de **ESPN API**, **TheSportsDB API** y **The Odds API**.
+- **APScheduler** — Programador de tareas en segundo plano para re-entrenamiento diario y reconciliación automática de predicciones.
 - **Mangum** — Adaptador ASGI a AWS Lambda / Netlify Serverless Functions.
 - **Uvicorn** — Servidor ASGI ultrarrápido para entorno local.
 
 ### Frontend (React / Vite)
 - **React 19** — Interfaz declarativa basada en componentes funcionales y Hooks.
 - **Vite 6** — Empaquetador y entorno de desarrollo ultra veloz.
+- **Recharts** — Librería de gráficos interactivos y responsivos (Area, Bar, Line, Radar Charts).
 - **Lucide React** — Colección de iconos vectoriales modernos.
 - **Vanilla CSS3** — Sistema de diseño personalizado con Glassmorphism y temas Neón.
 
@@ -162,8 +166,10 @@ parleys/
 │   │   └── 📂 functions/
 │   │       └── 📄 api.py          # Handler Mangum para Netlify Functions
 │   └── 📂 app/
-│       ├── 📄 main.py             # Aplicación principal FastAPI & Endpoints
+│       ├── 📄 main.py             # Aplicación principal FastAPI, Endpoints & Scheduler
 │       └── 📂 ml/
+│           ├── 📄 odds_api.py     # Conector con The Odds API (cuotas reales de sportsbooks)
+│           ├── 📄 prediction_log.py # Observabilidad, registro y reconciliación de acierto/bankroll
 │           ├── 📄 sports_api.py   # Conector ESPN API + TheSportsDB API + mapeo de logos
 │           ├── 📄 kbo_thesportsdb.py # Módulo especializado para datos TheSportsDB
 │           ├── 📄 ensemble_model.py # Meta-Ensemble ML (XGB, LGBM, SVM, NN, RF)
@@ -181,13 +187,16 @@ parleys/
         ├── 📄 App.jsx             # Contenedor principal y enrutado de pestañas
         ├── 📄 index.css           # Tokens de diseño, gradientes y animaciones
         ├── 📂 components/
-        │   ├── 📄 Header.jsx      # Selector de liga (MX, LCUP, NBA, MLB, WNBA, KBO)
-        │   ├── 📄 DailyFixtures.jsx # Tarjetas de partidos en vivo y cuotas +EV
+        │   ├── 📄 Header.jsx      # Selector de liga (MX, LCUP, MLB, WNBA, KBO, NFL)
+        │   ├── 📄 DailyFixtures.jsx # Tarjetas de partidos en vivo y cuotas +EV reales
+        │   ├── 📄 AccuracyWidget.jsx # Gráfica interactiva de precisión real reconciliada (LineChart)
+        │   ├── 📄 BankrollChart.jsx # Gráfica interactiva de evolución de Bankroll (AreaChart)
+        │   ├── 📄 BankrollWidget.jsx # Sparkline y resumen de rendimiento financiero acumulado
         │   ├── 📄 TeamIcon.jsx    # Renderizador inteligente de logos ESPN / TheSportsDB
         │   ├── 📄 MatchPredictor.jsx # Simulador de partidos 1v1 personalizado
         │   ├── 📄 ParlayBuilder.jsx # Creador y calculadora de apuestas combinadas
-        │   ├── 📄 ModelComparison.jsx # Comparador de precisión entre modelos
-        │   ├── 📄 BacktestSimulator.jsx # Rendimiento histórico y simulación ROI
+        │   ├── 📄 ModelComparison.jsx # Comparador visual e interactivo de modelos (Bar & Radar Charts)
+        │   ├── 📄 BacktestSimulator.jsx # Rendimiento histórico y simulación ROI (AreaChart)
         │   └── 📄 ModelTrainerUI.jsx # Interfaz para re-entrenar modelos
         └── 📂 services/
             └── 📄 api.js          # Cliente HTTP para comunicación con FastAPI
@@ -253,10 +262,12 @@ El proyecto está 100% preparado con archivos de configuración serverless indep
 | Método | Endpoint | Descripción |
 | :---: | :--- | :--- |
 | `GET` | `/api/leagues` | Obtiene la lista de ligas soportadas (`MX`, `LCUP`, `MLB`, `WNBA`, `KBO`, `NFL`) |
-| `GET` | `/api/fixtures?league=MX&date=YYYY-MM-DD` | Devuelve los partidos del día con predicciones del Meta-Ensemble (incluye córners para Liga MX) |
+| `GET` | `/api/fixtures?league=MX&date=YYYY-MM-DD` | Devuelve partidos del día con predicciones del Meta-Ensemble y cuotas reales (The Odds API / ESPN) |
 | `GET` | `/api/fixtures?league=NFL&date=YYYY-MM-DD` | Partidos de Pretemporada NFL con predicciones de spread y total (datos reales ESPN) |
-| `POST` | `/api/predict` | Realiza una predicción personalizada 1v1 entre dos equipos (soporta `NFL`) |
-| `GET` | `/api/backtest?league=NFL` | Simulación histórica de rendimiento NFL con datos reales de pretemporada (ESPN 2021-2025) |
+| `POST` | `/api/predict` | Realiza una predicción personalizada 1v1 entre dos equipos |
+| `GET` | `/api/accuracy` | Obtiene resumen de precisión real reconciliada contra marcadores oficiales ESPN por liga y día |
+| `GET` | `/api/bankroll` | Simulación interactiva de bankroll y P&L acumulado basado en predicciones reconciliadas |
+| `GET` | `/api/backtest?league=NFL` | Simulación histórica de rendimiento en backtest con datos reales de pretemporada |
 | `POST` | `/api/train?league=NFL` | Re-entrena el Meta-Ensemble NFL con datos históricos reales de ESPN + TheSportsDB |
 
 ---

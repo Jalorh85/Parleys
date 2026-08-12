@@ -10,13 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("parleys_ai")
 
 from app.ml.data_generator import (
     LEAGUE_TEAMS,
-    generate_team_profiles,
+    get_team_profiles_with_real_fallback,
     get_2026_upcoming_fixtures,
     get_upcoming_fixtures,
     generate_historical_dataset,
@@ -26,8 +27,13 @@ from app.ml.feature_engineering import dict_to_features, extract_features
 from app.ml.ensemble_model import MetaEnsembleSportsModel
 from app.ml.backtester import run_backtest
 from app.ml.espn_historical import (
-    generate_team_profiles_from_espn,
     generate_historical_dataset_from_espn,
+)
+from app.ml.prediction_log import (
+    log_predictions,
+    reconcile_league,
+    get_accuracy_summary,
+    get_bankroll_simulation,
 )
 
 app = FastAPI(
@@ -66,17 +72,45 @@ def _on_startup():
             except Exception as e:
                 logger.error(f"No se pudo cargar el modelo persistido de {league}: {e}")
 
-    # Retrain recurrente, desacoplado de deploys y de tráfico.
+    # Reconciliar predicciones pendientes una vez al arrancar -- red de
+    # seguridad: si el server estuvo caído, esto resuelve lo pendiente de
+    # inmediato en vez de esperar al próximo ciclo de las RETRAIN_HOUR_UTC.
+    for league in ALL_LEAGUES:
+        try:
+            reconcile_league(league)
+        except Exception as e:
+            logger.warning(f"No se pudo reconciliar predicciones de {league} al arrancar: {e}")
+
+    # Reconciliación diaria (revisa predicciones vs resultado real de ESPN)
+    # ANTES del retrain, a la misma hora fija -- así el log de precisión
+    # queda al día justo cuando también se actualiza el modelo.
+    _scheduler.add_job(
+        reconcile_all_leagues_job,
+        CronTrigger(hour=RETRAIN_HOUR_UTC, minute=0, timezone="UTC"),
+        id="reconcile_all_leagues",
+        replace_existing=True,
+    )
+
+    # Retrain recurrente, desacoplado de deploys y de tráfico. Hora FIJA
+    # (no un intervalo rodante desde que arrancó el proceso) -- así,
+    # pase lo que pase con el uptime/redeploys, siempre corre a la misma
+    # hora UTC, elegida para caer después de que prácticamente todos los
+    # partidos del día anterior de tus ligas (incluida MLB costa oeste,
+    # que puede terminar pasada la 1am hora Pacífico ~08-09h UTC) ya estén
+    # marcados como "completed" en ESPN y por lo tanto entren en el próximo
+    # dataset de entrenamiento. 15 minutos después de la reconciliación
+    # para no pegarle a ESPN con las dos cosas al mismo tiempo.
     _scheduler.add_job(
         retrain_all_leagues_job,
-        "interval",
-        hours=RETRAIN_INTERVAL_HOURS,
+        CronTrigger(hour=RETRAIN_HOUR_UTC, minute=15, timezone="UTC"),
         id="retrain_all_leagues",
         replace_existing=True,
-        next_run_time=None,  # el próximo ciclo natural; el de arranque ya se hizo arriba
     )
     _scheduler.start()
-    logger.info(f"Scheduler de retrain iniciado (cada {RETRAIN_INTERVAL_HOURS}h).")
+    logger.info(
+        f"Scheduler iniciado: reconciliación a las {RETRAIN_HOUR_UTC:02d}:00 UTC, "
+        f"retrain a las {RETRAIN_HOUR_UTC:02d}:15 UTC, todos los días."
+    )
 
 
 @app.on_event("shutdown")
@@ -90,11 +124,28 @@ def _on_shutdown():
 MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(os.path.dirname(__file__), "data", "models"))
 MODELS_CACHE: Dict[str, MetaEnsembleSportsModel] = {}
 
-# Cada cuántas horas se considera "vigente" un modelo ya entrenado antes de
-# que el job programado (ver retrain_all_leagues_job) lo vuelva a entrenar.
-# Con datos reales de ESPN una vez al día alcanza sobrado — los partidos de
-# una liga no cambian de resultado más de una vez por jornada.
+# Hora FIJA (UTC) a la que corre el reentrenamiento diario todos los días
+# (ver CronTrigger en _on_startup). 9 UTC = 4am hora Ciudad de México / 1am
+# hora Pacífico -- cae después de que hasta los partidos nocturnos de la
+# costa oeste de MLB ya terminaron y ESPN los marcó "completed". Si tus
+# ligas más relevantes terminan más tarde, subí este número.
+RETRAIN_HOUR_UTC = int(os.environ.get("RETRAIN_HOUR_UTC", "9"))
+
+# Ya NO define la cadencia del reentrenamiento diario (eso lo fija
+# RETRAIN_HOUR_UTC arriba, a hora fija). Ahora solo se usa como red de
+# seguridad al arrancar: si el último modelo persistido tiene más de estas
+# horas (ej. el server estuvo caído varios días), se re-entrena una vez de
+# inmediato en vez de esperar al próximo ciclo de las RETRAIN_HOUR_UTC.
 RETRAIN_INTERVAL_HOURS = float(os.environ.get("RETRAIN_INTERVAL_HOURS", "24"))
+
+# Qué tanto peso le da la predicción final a la probabilidad implícita del
+# mercado (cuota REAL, ver odds_api.py) frente a la del ensemble propio.
+# 0.35 = 65% modelo / 35% mercado. Solo aplica cuando hay cuota real
+# (odds_source == "real"); con cuota estimada nunca se mezcla (ver
+# ensemble_model.py:predict_one -- sería circular). Subir este valor hace
+# la predicción más parecida al mercado (menos oportunidades de +EV, pero
+# más creíbles); bajarlo la acerca más al modelo puro.
+MARKET_BLEND_WEIGHT = float(os.environ.get("MARKET_BLEND_WEIGHT", "0.35"))
 ALL_LEAGUES = ["LCUP", "MLB", "WNBA", "KBO", "MX", "NFL"]
 
 
@@ -167,22 +218,11 @@ def get_historical_dataset_with_meta(league: str, n_samples: int = 1000):
 
 def get_team_profiles(league: str) -> Dict[str, Dict]:
     """Perfiles de equipo: reales de ESPN si hay datos; para KBO (que no está
-    en ESPN), reales de TheSportsDB; si no, sintéticos. Si la fuente real
-    solo cubre parte de los equipos, se completa con el perfil sintético
-    para que ningún equipo de LEAGUE_TEAMS quede sin perfil."""
-    profiles = generate_team_profiles_from_espn(league)
-    if not profiles and league == "KBO":
-        profiles = _get_real_kbo_profiles()
-
-    if not profiles:
-        return generate_team_profiles(league)
-
-    if len(profiles) < len(LEAGUE_TEAMS.get(league, [])):
-        merged = generate_team_profiles(league)
-        merged.update(profiles)
-        return merged
-
-    return profiles
+    en ESPN), reales de TheSportsDB; si no, sintéticos. Delega en la función
+    centralizada de data_generator.py -- get_upcoming_fixtures() usa la
+    misma, así /api/predict, /api/leagues y los partidos reales del
+    dashboard quedan consistentes entre sí."""
+    return get_team_profiles_with_real_fallback(league)
 
 
 def get_or_load_model(league: str) -> MetaEnsembleSportsModel:
@@ -254,12 +294,29 @@ def _train_league_model(league: str, n_samples: int = 1200) -> MetaEnsembleSport
     return model
 
 
+def reconcile_all_leagues_job() -> None:
+    """Job programado (APScheduler) que revisa las predicciones ya
+    registradas (ver prediction_log.log_predictions, llamado desde
+    /api/fixtures) contra los resultados REALES de ESPN y marca cada una
+    como acierto/fallo de ganador y de Over/Under. Corre todos los días,
+    justo antes del retrain, para que /api/accuracy siempre refleje los
+    partidos de ayer."""
+    logger.info("Iniciando reconciliación de predicciones de todas las ligas...")
+    for league in ALL_LEAGUES:
+        try:
+            result = reconcile_league(league)
+            logger.info(f"Reconciliación {league}: {result}")
+        except Exception as e:
+            logger.error(f"Reconciliación programada falló para {league}: {e}")
+    logger.info("Reconciliación de predicciones completada.")
+
+
 def retrain_all_leagues_job() -> None:
     """Job programado (APScheduler) que reentrena y persiste el modelo de
     cada liga usando los últimos resultados reales disponibles. Corre solo,
     sin depender de deploys ni de que llegue tráfico -- así el modelo se
-    actualiza con la cadencia que vos definís (RETRAIN_INTERVAL_HOURS) y no
-    con la cadencia de tus `git push`."""
+    actualiza todos los días a la hora fija que vos definís (RETRAIN_HOUR_UTC)
+    y no con la cadencia de tus `git push`."""
     logger.info("Iniciando retrain programado de todas las ligas...")
     for league in ALL_LEAGUES:
         try:
@@ -418,7 +475,9 @@ def get_fixtures(
                 sb_spread=fix["sb_spread"],
                 sb_total=fix["sb_total"],
                 sb_corners_total=fix.get("sb_corners_total"),
-                league=league
+                league=league,
+                odds_are_real=(fix.get("odds_source") == "real"),
+                market_blend_weight=MARKET_BLEND_WEIGHT,
             )
             fix["prediction"] = prediction
         except Exception as e:
@@ -426,6 +485,13 @@ def get_fixtures(
             fix["prediction"] = None
             fix["prediction_error"] = str(e)
         enhanced_fixtures.append(fix)
+
+    # Best-effort: si falla el log de predicciones, no debe tumbar la
+    # respuesta del dashboard -- ver prediction_log.py.
+    try:
+        log_predictions(league, enhanced_fixtures)
+    except Exception as e:
+        logger.warning(f"No se pudo registrar el log de predicciones de {league}: {e}")
 
     return {
         "league": league,
@@ -533,6 +599,66 @@ def get_model_metrics(league: str = Query("LCUP")):
             {"model": "Meta-Ensemble (SVM+NN+RF+XGB+LGBM)", "win_accuracy": ens_acc, "total_mae": ens_mae, "roi_est": round(ens_acc - 52.4, 2)}
         ]
     }
+
+@app.get("/api/accuracy")
+def get_real_accuracy(
+    league: Optional[str] = Query(None, description="Si se omite, agrega todas las ligas"),
+    days: int = Query(30, ge=1, le=365, description="Ventana de días hacia atrás")
+):
+    """
+    Precisión REAL medida contra resultados reales ya reconciliados (ver
+    prediction_log.py) -- NO precisión sobre datos de entrenamiento/backtest
+    como /api/metrics. Esto es lo que responde "¿el reentrenamiento diario
+    realmente está mejorando el modelo con el tiempo?" con datos, no con
+    intuición. Los partidos de un día quedan reflejados acá recién después
+    de que corre la reconciliación programada (ver reconcile_all_leagues_job),
+    normalmente entre 1 y 2 días después de jugados.
+    """
+    if league and league not in LEAGUE_TEAMS:
+        raise HTTPException(status_code=400, detail="Liga no válida")
+    leagues = [league] if league else ALL_LEAGUES
+    return get_accuracy_summary(leagues, days=days)
+
+
+@app.post("/api/accuracy/reconcile")
+def trigger_reconciliation(league: Optional[str] = Query(None)):
+    """Dispara la reconciliación manualmente (sin esperar al job diario) --
+    útil para probar el flujo o para forzar una actualización tras cargar
+    predicciones nuevas."""
+    leagues = [league] if league else ALL_LEAGUES
+    if league and league not in LEAGUE_TEAMS:
+        raise HTTPException(status_code=400, detail="Liga no válida")
+    results = []
+    for lg in leagues:
+        try:
+            results.append(reconcile_league(lg))
+        except Exception as e:
+            results.append({"league": lg, "error": str(e)})
+    return {"results": results}
+
+
+@app.get("/api/bankroll")
+def get_bankroll(
+    league: Optional[str] = Query(None, description="Si se omite, agrega todas las ligas"),
+    days: int = Query(90, ge=1, le=365, description="Ventana de días hacia atrás"),
+    stake: float = Query(10.0, gt=0, description="Monto simulado por apuesta"),
+    only_value_bets: bool = Query(True, description="True: solo picks marcados +EV. False: siempre el ganador predicho")
+):
+    """
+    Simulación retrospectiva de bankroll: "si hubieras apostado `stake` a
+    cada pick desde hace `days` días, ¿cuánto tendrías hoy?". Usa
+    EXCLUSIVAMENTE predicciones ya reconciliadas contra resultados reales
+    (ver prediction_log.py) y las cuotas registradas en el momento de la
+    predicción -- nunca inventa ni ajusta un resultado después del hecho.
+
+    Esto es una simulación informativa con datos históricos, NO una
+    recomendación de apuesta ni garantía de resultados futuros.
+    """
+    if league and league not in LEAGUE_TEAMS:
+        raise HTTPException(status_code=400, detail="Liga no válida")
+    leagues = [league] if league else ALL_LEAGUES
+    return get_bankroll_simulation(leagues, days=days, stake=stake, only_value_bets=only_value_bets)
+
 
 @app.post("/api/backtest")
 def run_backtest_endpoint(req: BacktestRequest):

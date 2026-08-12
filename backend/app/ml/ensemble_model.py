@@ -72,7 +72,8 @@ class MetaEnsembleSportsModel:
 
     def predict_one(self, X: pd.DataFrame, sb_home_odds: float = 1.90, sb_away_odds: float = 1.90,
                      sb_spread: float = 0.0, sb_total: float = 200.0,
-                     sb_corners_total: float = None, league: str = None) -> Dict:
+                     sb_corners_total: float = None, league: str = None,
+                     odds_are_real: bool = False, market_blend_weight: float = 0.35) -> Dict:
         svm_res = self.svm.predict_one(X)
         nn_res = self.nn.predict_one(X)
         xgb_res = self.xgb.predict_one(X)
@@ -97,6 +98,40 @@ class MetaEnsembleSportsModel:
             + (lgbm_res["home_win_prob"] * w_lgbm)
         )
         ens_away_win_prob = 1.0 - ens_home_win_prob
+
+        # --- Mercado como input, no solo como punto de comparación ---
+        # Antes, sb_home_odds/sb_away_odds solo se usaban DESPUÉS para
+        # calcular el +EV -- el mercado nunca entraba a la predicción en
+        # sí. Ahora que hay cuotas REALES disponibles (the-odds-api.com,
+        # ver odds_source en data_generator.py), se mezcla la probabilidad
+        # del ensemble con la probabilidad implícita del mercado (sin vig)
+        # -- el mercado es, empíricamente, uno de los mejores predictores
+        # individuales que existen para moneyline. Solo se mezcla cuando
+        # odds_are_real=True: mezclar con una cuota ESTIMADA por el propio
+        # modelo sería circular (el modelo terminaría "confirmando" su
+        # propia opinión, no incorporando información nueva).
+        #
+        # Importante: esto hace que el +EV detectado después sea MENOR y
+        # más selectivo que antes -- es el comportamiento correcto. Un
+        # modelo que ya incorporó la opinión del mercado y AÚN así
+        # encuentra una diferencia grande es una señal mucho más creíble
+        # que una que ignora al mercado por completo.
+        model_only_home_win_prob = ens_home_win_prob
+        market_implied_home_prob = None
+        blended_with_market = False
+
+        if odds_are_real and sb_home_odds and sb_away_odds and sb_home_odds > 1.0 and sb_away_odds > 1.0:
+            raw_home = 1.0 / sb_home_odds
+            raw_away = 1.0 / sb_away_odds
+            overround = raw_home + raw_away  # > 1.0 por el margen (vig) de la casa
+            market_implied_home_prob = raw_home / overround  # normalizado a 100%, vig removido
+
+            ens_home_win_prob = (
+                (1.0 - market_blend_weight) * ens_home_win_prob
+                + market_blend_weight * market_implied_home_prob
+            )
+            ens_away_win_prob = 1.0 - ens_home_win_prob
+            blended_with_market = True
 
         ens_margin = (
             (svm_res["predicted_margin"] * w_svm)
@@ -185,6 +220,9 @@ class MetaEnsembleSportsModel:
             "ensemble": {
                 "home_win_prob": round(ens_home_win_prob, 4),
                 "away_win_prob": round(ens_away_win_prob, 4),
+                "model_only_home_win_prob": round(model_only_home_win_prob, 4),
+                "market_implied_home_prob": round(market_implied_home_prob, 4) if market_implied_home_prob is not None else None,
+                "blended_with_market": blended_with_market,
                 "predicted_winner": "HOME" if ens_home_win_prob >= 0.5 else "AWAY",
                 "predicted_margin": round(ens_margin, 2),
                 "predicted_spread_line": round(-ens_margin, 1),

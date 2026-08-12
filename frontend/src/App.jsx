@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import DailyFixtures from './components/DailyFixtures';
+import AccuracyWidget from './components/AccuracyWidget';
+import BankrollChart from './components/BankrollChart';
 import MatchPredictor from './components/MatchPredictor';
 import ParlayBuilder from './components/ParlayBuilder';
 import ModelComparison from './components/ModelComparison';
@@ -105,6 +107,10 @@ export default function App() {
         setActiveTab={setActiveTab}
         leagues={leagues}
       />
+
+      {/* ── Precisión Real (solo en pestaña de partidos) ── */}
+      {activeTab === 'fixtures' && <AccuracyWidget activeLeague={activeLeague} />}
+      {activeTab === 'fixtures' && <BankrollChart defaultLeague={activeLeague} />}
 
       {/* ── Selector de Fecha (solo en pestaña de partidos) ── */}
       {activeTab === 'fixtures' && (
