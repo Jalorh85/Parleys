@@ -54,12 +54,11 @@ app.add_middleware(
 _scheduler = BackgroundScheduler(timezone="UTC")
 
 
-@app.on_event("startup")
-def _on_startup():
-    # Si el modelo de una liga no existe o está vencido (más viejo que
-    # RETRAIN_INTERVAL_HOURS), lo entrenamos una vez al arrancar. Si ya
-    # existe y está vigente (Volume persistente de Railway), NO se toca --
-    # así un deploy normal no le cambia la predicción a nadie.
+def _background_initial_tasks():
+    """Ejecuta la reconciliación y el entrenamiento de modelos obsoletos
+    en un hilo secundario para no demorar el inicio del servidor FastAPI
+    ni provocar timeouts de healthcheck en Railway."""
+    logger.info("Iniciando tareas de fondo al despegar el servidor...")
     for league in ALL_LEAGUES:
         if _model_is_stale(league):
             try:
@@ -72,18 +71,26 @@ def _on_startup():
             except Exception as e:
                 logger.error(f"No se pudo cargar el modelo persistido de {league}: {e}")
 
-    # Reconciliar predicciones pendientes una vez al arrancar -- red de
-    # seguridad: si el server estuvo caído, esto resuelve lo pendiente de
-    # inmediato en vez de esperar al próximo ciclo de las RETRAIN_HOUR_UTC.
     for league in ALL_LEAGUES:
         try:
             reconcile_league(league)
         except Exception as e:
             logger.warning(f"No se pudo reconciliar predicciones de {league} al arrancar: {e}")
+    logger.info("Tareas de fondo iniciales completadas con éxito.")
+
+
+@app.on_event("startup")
+def _on_startup():
+    # Intenta cargar modelos existentes en memoria rápidamente sin bloquear
+    for league in ALL_LEAGUES:
+        model_path = os.path.join(MODEL_DIR, f"model_{league}.joblib")
+        if os.path.exists(model_path):
+            try:
+                get_or_load_model(league)
+            except Exception as e:
+                logger.warning(f"No se pudo precargar modelo de {league}: {e}")
 
     # Reconciliación diaria (revisa predicciones vs resultado real de ESPN)
-    # ANTES del retrain, a la misma hora fija -- así el log de precisión
-    # queda al día justo cuando también se actualiza el modelo.
     _scheduler.add_job(
         reconcile_all_leagues_job,
         CronTrigger(hour=RETRAIN_HOUR_UTC, minute=0, timezone="UTC"),
@@ -91,15 +98,7 @@ def _on_startup():
         replace_existing=True,
     )
 
-    # Retrain recurrente, desacoplado de deploys y de tráfico. Hora FIJA
-    # (no un intervalo rodante desde que arrancó el proceso) -- así,
-    # pase lo que pase con el uptime/redeploys, siempre corre a la misma
-    # hora UTC, elegida para caer después de que prácticamente todos los
-    # partidos del día anterior de tus ligas (incluida MLB costa oeste,
-    # que puede terminar pasada la 1am hora Pacífico ~08-09h UTC) ya estén
-    # marcados como "completed" en ESPN y por lo tanto entren en el próximo
-    # dataset de entrenamiento. 15 minutos después de la reconciliación
-    # para no pegarle a ESPN con las dos cosas al mismo tiempo.
+    # Retrain recurrente, desacoplado de deploys
     _scheduler.add_job(
         retrain_all_leagues_job,
         CronTrigger(hour=RETRAIN_HOUR_UTC, minute=15, timezone="UTC"),
@@ -111,6 +110,10 @@ def _on_startup():
         f"Scheduler iniciado: reconciliación a las {RETRAIN_HOUR_UTC:02d}:00 UTC, "
         f"retrain a las {RETRAIN_HOUR_UTC:02d}:15 UTC, todos los días."
     )
+
+    # Iniciar entrenamiento/reconciliación pesada en background thread para arranque instantáneo de uvicorn
+    import threading
+    threading.Thread(target=_background_initial_tasks, daemon=True).start()
 
 
 @app.on_event("shutdown")
